@@ -44,34 +44,10 @@ Reference: https://zed.dev/docs/extensions/languages
   file renames, search, and vault behavior rather than assuming Markdown views
   will accept an independent language. Also recognize `.md` files with a
   supported `@document mikedown=VERSION` declaration.
-- [ ] Add CodeMirror 6 highlighting for blocks, annotations, and table IDs.
-- [ ] Compile the Rust formatting library to WASM with a small JavaScript
-  binding for formatted text and diagnostics. Keep filesystem work outside the
-  core.
-- [ ] Bundle the WASM module and test initialization and failures on desktop and
-  mobile; avoid depending on a locally installed CLI for mobile use.
-- [ ] Add command-palette actions for format document, ordered/unordered lists,
-  table style, and document width, using the shared formatter after edits.
-- [ ] Apply formatting as one editor transaction, preserving dirty-buffer
-  changes, selections, and undo history. Avoid vault-wide automatic rewrites.
-- [ ] Test desktop/mobile editing, sync conflicts, IME input, large documents,
-  Unicode tables, ID/reference maintenance, and plugin unload/reload.
-- [ ] Document v0.1 restrictions and investigate Markdown-note interoperability
-  separately from native `.mkd` files.
-
 Reference: https://github.com/obsidianmd/obsidian-api
 
 ## Later language and tooling work
 
-- [ ] Editor-assisted editing of wide Unicode tables and navigable width
-  targets.
-- [ ] Multi-paragraph and mixed-block list items; independent nested
-  annotations.
-- [ ] Optional wrapping within table cells with an unambiguous round-trip
-  grammar.
-- [ ] Additional heading styles and generated contents lists.
-- [ ] Incremental parsing and formatter benchmarks on large documents.
-- [ ] Additional diagnostics per parse and machine-readable CLI diagnostics.
-- [ ] Project-level defaults and a versioned language evolution policy.
-- [ ] CI matrix and downloadable releases for macOS, Linux, and Windows; v0.1 is
-  currently verified locally on macOS.
+- [ ] Audit `arithmetic_side_effects`, `indexing_slicing`, and `string_slice`
+  allowances. Verify arithmetic bounds and UTF-8 boundaries before narrowing the
+  exceptions.

@@ -10,11 +10,12 @@ use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 
 use cli_error::CliError;
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{self, ExitCode};
 
 #[derive(Parser)]
 #[command(name = "mikedown", version, about = "Format plain-text documents")]
@@ -109,7 +110,7 @@ fn run() -> Result<u8, CliError> {
     // Preflight the whole batch, including permissions, before any replacement.
     let mut inputs = Vec::new();
     let mut failures = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
     for path in paths {
         match read_input(&path, mode) {
             Ok(input) => {
@@ -218,7 +219,7 @@ fn stage(input: &Input) -> Result<Replacement, CliError> {
     let mut opened: Option<(PathBuf, File)> = None;
     for sequence in 0..1000 {
         let mut name = OsString::from(".mikedown-");
-        name.push(std::process::id().to_string());
+        name.push(process::id().to_string());
         name.push(format!("-{sequence}.tmp"));
         let path = parent.join(name);
         let mut options = OpenOptions::new();

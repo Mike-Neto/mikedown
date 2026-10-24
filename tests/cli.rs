@@ -5,10 +5,11 @@
     reason = "Integration assertions report invalid output and failed filesystem operations"
 )]
 
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{self, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Workspace(PathBuf);
@@ -20,9 +21,9 @@ impl Workspace {
     )]
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = env::temp_dir().join(format!(
             "mikedown-test-{}-{}",
-            std::process::id(),
+            process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
@@ -249,11 +250,13 @@ fn duplicate_write_inputs_are_rejected_before_changes() {
 #[cfg(unix)]
 #[test]
 fn symlink_write_is_rejected_before_other_files_change() {
+    use std::os::unix::fs::symlink;
+
     let workspace = Workspace::new();
     let original = workspace.file("original.mkd", "#   Hello\n");
     let other = workspace.file("other.mkd", "#   Other\n");
     let link = workspace.0.join("linked.mkd");
-    std::os::unix::fs::symlink(&original, &link).unwrap();
+    symlink(&original, &link).unwrap();
     let output = command()
         .args(["fmt", "--write"])
         .args([&other, &link])

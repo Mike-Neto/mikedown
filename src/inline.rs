@@ -1,6 +1,8 @@
 //! Shared inline recognition. Prose treats backslashes literally; tables protect
 //! the following scalar. Both retain exact spelling and match backtick-run lengths.
 
+use std::iter;
+
 use nom::branch::alt;
 use nom::bytes::complete::{take_while, take_while1};
 use nom::character::complete::{anychar, char};
@@ -30,7 +32,7 @@ fn piece(input: &str, escapes: bool) -> IResult<&str, &str> {
 pub(crate) fn fragments(text: &str, escapes: bool) -> impl Iterator<Item = Fragment<'_>> {
     let mut remaining = text;
     let mut code = 0;
-    std::iter::from_fn(move || {
+    iter::from_fn(move || {
         let (rest, text) = piece(remaining, escapes).ok()?;
         remaining = rest;
         let ticks = text.starts_with('`');

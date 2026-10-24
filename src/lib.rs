@@ -8,6 +8,7 @@ mod parser;
 mod table;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
 use unicode_width::UnicodeWidthStr;
 
 use parser::{Document, Kind, ListItem};
@@ -342,7 +343,7 @@ fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -
             && current.trim() != "---"
             && !ascii_rule(current.trim())
         {
-            output.push(std::mem::take(&mut current));
+            output.push(mem::take(&mut current));
             current.push_str(rest);
             has_word = false;
         }
