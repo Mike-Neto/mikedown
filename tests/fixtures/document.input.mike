@@ -1,0 +1,21 @@
+@document width=32 table=unicode
+
+#    Morning
+
+This is a short paragraph that should wrap to the configured width.
+
+@ol start=2
+- Buy beans
+- Make coffee
+
+> Keep the text readable in every editor.
+
+@table
+| Drink | Price |
+| Coffee | 3 |
+| Tea | 2 |
+
+```text
+@ol
+- literal
+```
