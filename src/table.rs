@@ -7,6 +7,7 @@ use nom::sequence::delimited;
 use nom::{IResult, Parser};
 use unicode_width::UnicodeWidthStr;
 
+use crate::text::{Targets, Text};
 use crate::{Diagnostic, error, inline};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,7 +37,7 @@ impl Alignment {
 }
 
 pub(crate) struct Table {
-    rows: Vec<Vec<String>>,
+    rows: Vec<Vec<Text>>,
     alignments: Vec<Alignment>,
 }
 
@@ -71,8 +72,12 @@ impl Table {
             .join(",")
     }
 
-    pub(crate) fn parse(lines: &[&str], start: usize) -> Result<Self, Diagnostic> {
-        let mut rows: Vec<Vec<String>> = Vec::new();
+    pub(crate) fn parse(
+        lines: &[&str],
+        originals: &[&str],
+        start: usize,
+    ) -> Result<Self, Diagnostic> {
+        let mut rows: Vec<Vec<Text>> = Vec::new();
         let mut alignments = Vec::new();
         let mut header_boundary = false;
         for (offset, line) in lines.iter().enumerate() {
@@ -126,10 +131,16 @@ impl Table {
                     .collect();
                 header_boundary = true;
             } else {
+                let original = originals[offset];
+                let mut cursor = 0;
                 rows.push(
                     cells
                         .into_iter()
-                        .map(|cell| inline::escape_delimiters(&cell))
+                        .map(|cell| {
+                            let begin = cursor + original[cursor..].find(cell).unwrap_or(0);
+                            cursor = begin + cell.len();
+                            Text::at(cell, start + offset, original[..begin].chars().count() + 1)
+                        })
                         .collect(),
                 );
             }
@@ -143,7 +154,25 @@ impl Table {
         Ok(Self { rows, alignments })
     }
 
+    pub(crate) fn resolve_references(&mut self, targets: &Targets) -> Result<(), Diagnostic> {
+        for row in &mut self.rows {
+            for cell in row {
+                cell.resolve(targets)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn emit(&self, style: Style, override_alignments: Option<&[Alignment]>) -> String {
+        let rows: Vec<Vec<String>> = self
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| inline::escape_delimiters(&cell.value))
+                    .collect()
+            })
+            .collect();
         let alignments = override_alignments.unwrap_or(&self.alignments);
         let mut widths = alignments
             .iter()
@@ -159,7 +188,7 @@ impl Table {
                 }
             })
             .collect::<Vec<_>>();
-        for row in &self.rows {
+        for row in &rows {
             for (index, cell) in row.iter().enumerate() {
                 widths[index] = widths[index].max(cell.width());
             }
@@ -178,7 +207,7 @@ impl Table {
             Style::Pipes => {}
         }
         let delimiter = if style == Style::Unicode { '│' } else { '|' };
-        for (row_index, row) in self.rows.iter().enumerate() {
+        for (row_index, row) in rows.iter().enumerate() {
             let cells = row
                 .iter()
                 .enumerate()
@@ -187,6 +216,11 @@ impl Table {
                     let left = match alignments[index] {
                         Alignment::Left => 0,
                         Alignment::Right => padding,
+                        #[expect(
+                            clippy::integer_division,
+                            clippy::integer_division_remainder_used,
+                            reason = "Centering intentionally rounds down public padding and needs no constant-time arithmetic"
+                        )]
                         Alignment::Center => padding / 2,
                     };
                     format!(" {}{cell}{} ", " ".repeat(left), " ".repeat(padding - left))

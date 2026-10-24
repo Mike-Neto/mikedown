@@ -25,7 +25,7 @@ fn core_blocks_and_nested_lists() {
     );
     assert_eq!(
         output,
-        "# Heading\n\n@ol start=3\n3. first\n  - child\n  - another\n4. second\n\n> quoted words on two lines\n\n---\n"
+        "# Heading\n\n@ol start=3\n3. first\n  a. child\n  b. another\n4. second\n\n> quoted words on two lines\n\n---\n"
     );
     assert_eq!(stable("@ul\n1. a\n2. b\n"), "@ul\n- a\n- b\n");
 }
@@ -294,6 +294,10 @@ fn varied_documents_remain_valid_and_idempotent_after_formatting() {
             random = random
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1);
+            #[expect(
+                clippy::integer_division_remainder_used,
+                reason = "Generated test data uses modulo to select a word and needs no constant-time arithmetic"
+            )]
             let index = usize::try_from(random >> 32).unwrap() % words.len();
             source.push_str(words[index]);
             source.push(' ');

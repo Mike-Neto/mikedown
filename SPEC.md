@@ -32,7 +32,7 @@ selectors.
 
 ```text
 annotation = "@" name *(whitespace key "=" value)
-name = "document" | "paragraph" | "quote" | "ol" | "ul" | "table"
+name = "document" | "paragraph" | "quote" | "ol" | "ul" | "table" | "item"
 ```
 
 An annotation occupies its own line. Leading/trailing whitespace is accepted and removed. No closing
@@ -53,7 +53,8 @@ recognized as an annotation.
 Only one document annotation is allowed, before every content block. A block annotation applies to the
 next block, even across blank lines. It cannot be followed by a second annotation or end-of-file without
 a target. An incompatible target is an error. Per-block options override document defaults. Nested list
-items do not take independent annotations in v0.1.
+items do not take independent formatting annotations. Inside `@ol`, `@item id=NAME` attaches an identity
+to the immediately following item at the same indentation, without a blank line.
 
 @table id=table-1
 | Annotation   | Target                                          | Supported options                    |
@@ -61,30 +62,32 @@ items do not take independent annotations in v0.1.
 | `@document`  | Whole document                                  | `mikedown`, `width`, `table`, `wrap` |
 | `@paragraph` | Next paragraph                                  | `width`                              |
 | `@quote`     | Next quote block                                | `width`                              |
-| `@ol`        | Next list, converting its root items to numbers | `width`, `start`                     |
+| `@ol`        | Next list, recursively ordering every item      | `width`, `start`                     |
 | `@ul`        | Next list, converting its root items to bullets | `width`                              |
 | `@table`     | Next table                                      | `style`, `align`, `id`               |
+| `@item`      | Next item inside an `@ol` list                  | `id` (required)                      |
 
 Option values:
 
-- `mikedown`: the formatter package version, currently exactly `0.1.0`. The option is optional; the
-  formatter preserves a supported explicit declaration. Other versions, including malformed or empty
-  values, are errors located at the option token; they are never silently rewritten. The option is
-  supported only on `@document`.
-- `width`: positive integer display columns, or `off` to preserve physical prose line boundaries.
-  Document default: `80`; blocks inherit the effective document width. Width is a target, not a hard
-  maximum for indivisible content.
-- `table` / `style`: `unicode`, `ascii`, or `pipes`. Document default: `pipes`.
-- `start`: positive decimal integer up to 4294967295. Default: `1`. Applies to root ordered items; nested
-  ordered lists start at one.
-- `align`: comma-separated `left`, `right`, or `center`, exactly one per column. For example,
-  `align=left,right`. Default: left, unless a pipe header separator supplies alignment. Right/center
-  alignment inferred from a separator is saved as a table annotation so conversion to a bordered style
-  stays repeatable.
-- `id`: an ASCII letter followed by ASCII letters, digits, hyphens, or underscores. IDs are unique across
-  tables in a document.
-- `wrap`: `table:ID`. This is a formatter-maintained reference to the widest table, not a request to pin
-  a particular table. See section 5.
+@ol
+1. `mikedown`: the formatter package version, currently exactly `0.1.0`. The option is optional; the
+   formatter preserves a supported explicit declaration. Other versions, including malformed or empty
+   values, are errors located at the option token; they are never silently rewritten. The option is
+   supported only on `@document`.
+2. `width`: positive integer display columns, or `off` to preserve physical prose line boundaries.
+   Document default: `80`; blocks inherit the effective document width. Width is a target, not a hard
+   maximum for indivisible content.
+3. `table` / `style`: `unicode`, `ascii`, or `pipes`. Document default: `pipes`.
+4. `start`: positive decimal integer up to 4294967295. Default: `1`. Applies to root ordered items;
+   nested lists inside `@ol` restart at one beneath each new parent.
+5. `align`: comma-separated `left`, `right`, or `center`, exactly one per column. For example,
+   `align=left,right`. Default: left, unless a pipe header separator supplies alignment. Right/center
+   alignment inferred from a separator is saved as a table annotation so conversion to a bordered style
+   stays repeatable.
+6. `id`: an ASCII letter followed by ASCII letters, digits, hyphens, or underscores. IDs are unique
+   across tables and anchored list items in a document.
+7. `wrap`: `table:ID`. This is a formatter-maintained reference to the widest table, not a request to pin
+   a particular table. See section 5.
 
 Example:
 
@@ -142,10 +145,54 @@ removes root indentation. Continuation lines align under the item's text after i
 Continuation lines must be indented beyond their current item and cannot begin another block. A blank
 line ends the list; multi-paragraph items are deferred.
 
-An `@ol` or `@ul` annotation converts root items only. Nested item types remain as written and their
-ordered counters are independent. Task markers such as `[x]` remain ordinary item text. Quotes and fenced
-code nested inside list items are not part of the v0.1 list grammar; they start separate top-level
-blocks.
+An `@ol` annotation converts every item in its subtree, including bullets, to an ordered item. Its
+markers cycle by nesting depth: decimal (`1.`), lowercase alphabetic (`a.`), lowercase Roman (`i.`),
+lowercase Greek (`α.`), then decimal again. Each new nested sibling list restarts at one. Root numbering
+uses `start=N` when supplied, otherwise the first item's existing decimal number or one for other
+markers. Alphabetic labels continue after `z` with `aa`; Greek labels use the 24 lowercase letters
+without final sigma and continue after `ω` with `αα`. Roman labels use subtractive notation and repeated
+`m` for values above 3999.
+
+Inside `@ol`, bullet input remains accepted. Ordered input markers may be decimal numbers, lowercase
+ASCII letters (including Roman numerals), or lowercase Greek letters, followed by `.` and a space or
+end-of-line. The formatter regenerates their style and nested values. A continuation beginning with such
+a marker is interpreted as a new item; keep the marker inline or escape its spelling as `\a.` when it is
+ordinary prose. Wrapping never introduces such a marker at a new line's beginning.
+
+Unannotated lists retain their original behavior: only decimal ordered markers are recognized, and nested
+numbering preserves the first source number. `@ul` converts root items only; nested item types remain as
+written. Task markers such as `[x]` remain ordinary item text. Quotes and fenced code nested inside list
+items are not part of the v0.1 list grammar; they start separate top-level blocks.
+
+### Stable item references
+
+Inside `@ol`, place `@item id=NAME` immediately above the item to identify, using exactly the item's
+indentation. IDs are explicit, document-local, and remain unchanged when items move or their text is
+edited. They follow the same character rules as table IDs and share the document-wide namespace. Missing
+IDs, duplicate IDs, and anchors without an immediate item at the same indentation are errors.
+
+```text
+@ol start=3
+3. Prepare
+  @item id=validate-input
+  a. Validate input
+    i. Check fields
+      α. Check names
+        1. Check length
+
+See [3.a](item:validate-input).
+```
+
+Write `[](item:NAME)` for a reference. Every inline link whose exact destination is `item:NAME` has its
+label replaced with the target's full current path, without a trailing dot. Existing labels, including
+stale numbers, are refreshed on every format. The stable ID, rather than that displayed path, identifies
+the target. References may precede their targets and appear in paragraphs, headings, quotes, list text,
+or table cells. Missing targets, invalid IDs, and targets that identify tables are source-located errors
+and prevent writes. Renaming an ID requires updating its references.
+
+Code spans, fenced and indented code, front matter, literal HTML, images, reference definitions, and
+content inside other links remain literal. Ordinary link destinations and author-written labels remain
+unchanged. Cross-document references are outside this version.
 
 ### Quotes
 
@@ -221,19 +268,21 @@ A table must have at least a header row.
 
 Table layout never depends on prose wrapping. Formatting uses these passes:
 
-1. Parse and validate every block and annotation, including unique table IDs.
-2. Lay out all tables using their effective styles and alignments.
-3. Measure each complete table, including borders and padding. Select the widest; the first in document
+@ol
+1. Parse and validate every block and annotation, including unique table and item IDs.
+2. Assign list markers and full item paths, then resolve item references in all supported text.
+3. Lay out all tables using their effective styles and alignments.
+4. Measure each complete table, including borders and padding. Select the widest; the first in document
    order wins equal-width ties.
-4. Compute `effective_width = max(configured_width, widest_table_width)`.
-5. If the widest table exceeds the configured minimum, give it an ID if needed and add/update
+5. Compute `effective_width = max(configured_width, widest_table_width)`.
+6. If the widest table exceeds the configured minimum, give it an ID if needed and add/update
    `wrap=table:ID` when a document annotation is present. Without one, derive the width directly without
    generating IDs or references. Reflow inheriting prose, list items, and quotes to the effective width.
 
-Generated IDs use the smallest available `table-N`, starting at one. Existing IDs remain unchanged. When
-a document annotation is present, the formatter may insert the target's table annotation, preserving
-existing options. Without a document annotation, the same width is derived on every run without adding a
-document annotation or IDs for width references.
+Generated IDs use the smallest available `table-N`, starting at one, reserving both table and item IDs.
+Existing IDs remain unchanged. When a document annotation is present, the formatter may insert the
+target's table annotation, preserving existing options. Without a document annotation, the same width is
+derived on every run without adding a document annotation or IDs for width references.
 
 On every run, the widest table is reconsidered. Changing style, editing cell text, adding/deleting
 tables, or removing the previous target can change the reference. A syntactically valid stale reference

@@ -3,16 +3,21 @@
 //! The formatted output is valid input: tables, annotations, and generated width
 //! references are all parsed again on subsequent runs.
 
+extern crate alloc;
+
 mod inline;
+mod list;
 mod parser;
 mod table;
+mod text;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::mem;
+use alloc::collections::{BTreeMap, BTreeSet};
+use core::mem;
 use unicode_width::UnicodeWidthStr;
 
 use parser::{Document, Kind, ListItem};
 use table::{Alignment, Style};
+use text::{Targets, Text};
 
 const DOCUMENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -42,6 +47,7 @@ struct Annotation {
     name: String,
     options: BTreeMap<String, String>,
     line: usize,
+    id_column: usize,
 }
 
 impl Annotation {
@@ -50,6 +56,7 @@ impl Annotation {
             name: name.into(),
             options: BTreeMap::new(),
             line,
+            id_column: 1,
         }
     }
 
@@ -86,6 +93,8 @@ pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
 }
 
 fn format_document(document: &mut Document) -> Result<String, Diagnostic> {
+    let targets = prepare_references(document)?;
+    let reserved_ids = targets.keys().cloned().collect();
     let base_width = document
         .annotation
         .as_ref()
@@ -99,37 +108,34 @@ fn format_document(document: &mut Document) -> Result<String, Diagnostic> {
         ids,
         widest,
         mut text,
-    } = measure_tables(document, default_style)?;
+    } = measure_tables(document, default_style, reserved_ids)?;
 
-    let mut effective_width = base_width;
-    if let (Some(minimum), Some((index, table_width))) = (base_width, widest) {
-        if table_width > minimum {
-            if let Some(document_annotation) = &mut document.annotation {
-                let block = &mut document.blocks[index];
-                let annotation = block
-                    .annotation
-                    .get_or_insert_with(|| Annotation::new("table", block.line));
-                let id = if let Some(id) = annotation.options.get("id") {
-                    id.clone()
-                } else {
-                    let mut suffix = 1;
-                    while ids.contains(&format!("table-{suffix}")) {
-                        suffix += 1;
-                    }
-                    let id = format!("table-{suffix}");
-                    annotation.options.insert("id".into(), id.clone());
-                    id
-                };
-                document_annotation
-                    .options
-                    .insert("wrap".into(), format!("table:{id}"));
-            }
-            effective_width = Some(table_width);
-        } else if let Some(annotation) = &mut document.annotation {
-            annotation.options.remove("wrap");
+    let wrapping_table =
+        widest.filter(|(_, width)| base_width.is_some_and(|minimum| *width > minimum));
+    let effective_width = wrapping_table.map(|(_, width)| width).or(base_width);
+    if let Some(document_annotation) = &mut document.annotation {
+        if let Some((index, _)) = wrapping_table {
+            let block = &mut document.blocks[index];
+            let annotation = block
+                .annotation
+                .get_or_insert_with(|| Annotation::new("table", block.line));
+            let id = if let Some(id) = annotation.options.get("id") {
+                id.clone()
+            } else {
+                let mut suffix = 1;
+                while ids.contains(&format!("table-{suffix}")) {
+                    suffix += 1;
+                }
+                let id = format!("table-{suffix}");
+                annotation.options.insert("id".into(), id.clone());
+                id
+            };
+            document_annotation
+                .options
+                .insert("wrap".into(), format!("table:{id}"));
+        } else {
+            document_annotation.options.remove("wrap");
         }
-    } else if let Some(annotation) = &mut document.annotation {
-        annotation.options.remove("wrap");
     }
 
     let mut pieces = Vec::new();
@@ -145,8 +151,8 @@ fn format_document(document: &mut Document) -> Result<String, Diagnostic> {
             .as_ref()
             .map_or(effective_width, |a| a.width(effective_width));
         let body = match &block.kind {
-            Kind::Paragraph(lines) => wrap_lines(lines, width, "", ""),
-            Kind::Heading(level, text) => format!("{} {}", "#".repeat(*level), text.trim()),
+            Kind::Paragraph(lines) => wrap_lines(lines, width, "", "", false),
+            Kind::Heading(level, text) => format!("{} {}", "#".repeat(*level), text.value.trim()),
             Kind::Quote(lines) => emit_quote(lines, width),
             Kind::List(items) => emit_list(items, block.annotation.as_ref(), width),
             Kind::Table(_) => text.remove(&index).unwrap_or_default(),
@@ -165,6 +171,63 @@ fn format_document(document: &mut Document) -> Result<String, Diagnostic> {
     }
 }
 
+fn register_target(
+    targets: &mut Targets,
+    id: &str,
+    path: Option<String>,
+    annotation: &Annotation,
+) -> Result<(), Diagnostic> {
+    if let Some(previous) = targets.get(id) {
+        let message = if previous.is_none() && path.is_none() {
+            format!("duplicate table ID '{id}'")
+        } else {
+            format!("duplicate ID '{id}'")
+        };
+        return Err(Diagnostic {
+            line: annotation.line,
+            column: annotation.id_column,
+            message,
+        });
+    }
+    targets.insert(id.into(), path);
+    Ok(())
+}
+
+fn prepare_references(document: &mut Document) -> Result<Targets, Diagnostic> {
+    let mut targets = Targets::new();
+    for block in &mut document.blocks {
+        if let Some(annotation) = &block.annotation
+            && let Some(id) = annotation.options.get("id")
+        {
+            register_target(&mut targets, id, None, annotation)?;
+        }
+        if let Kind::List(items) = &mut block.kind {
+            list::assign(items, block.annotation.as_ref());
+            for item in items {
+                if let Some(anchor) = &item.anchor
+                    && let Some(id) = anchor.options.get("id")
+                {
+                    register_target(&mut targets, id, Some(item.path.clone()), anchor)?;
+                }
+            }
+        }
+    }
+    for block in &mut document.blocks {
+        match &mut block.kind {
+            Kind::Paragraph(lines) | Kind::Quote(lines) => text::resolve_lines(lines, &targets)?,
+            Kind::Heading(_, value) => value.resolve(&targets)?,
+            Kind::List(items) => {
+                for item in items {
+                    text::resolve_lines(&mut item.lines, &targets)?;
+                }
+            }
+            Kind::Table(table) => table.resolve_references(&targets)?,
+            Kind::Literal(_) => {}
+        }
+    }
+    Ok(targets)
+}
+
 struct TableLayout {
     ids: BTreeSet<String>,
     widest: Option<(usize, usize)>,
@@ -174,18 +237,13 @@ struct TableLayout {
 fn measure_tables(
     document: &mut Document,
     default_style: Style,
+    ids: BTreeSet<String>,
 ) -> Result<TableLayout, Diagnostic> {
-    let mut ids = BTreeSet::new();
     let mut widest: Option<(usize, usize)> = None;
     let mut table_text = BTreeMap::new();
 
     // Tables are independent of prose width, so this pass cannot form a layout cycle.
     for (index, block) in document.blocks.iter_mut().enumerate() {
-        if let Some(id) = block.annotation.as_ref().and_then(|a| a.options.get("id"))
-            && !ids.insert(id.clone())
-        {
-            return Err(error(block.line, format!("duplicate table ID '{id}'")));
-        }
         if let Kind::Table(table) = &block.kind {
             let style = block
                 .annotation
@@ -235,85 +293,77 @@ fn measure_tables(
     })
 }
 
-fn emit_quote(lines: &[String], width: Option<usize>) -> String {
+fn emit_quote(lines: &[Text], width: Option<usize>) -> String {
     let mut output = Vec::new();
     let mut paragraph = Vec::new();
     for line in lines {
-        if line.is_empty() {
+        if line.value.is_empty() {
             if !paragraph.is_empty() {
-                output.push(wrap_lines(&paragraph, width, "> ", "> "));
+                output.push(wrap_lines(&paragraph, width, "> ", "> ", false));
                 paragraph.clear();
             }
             output.push(">".into());
         } else {
-            paragraph.push(line.clone());
+            paragraph.push(line.value.clone());
         }
     }
     if !paragraph.is_empty() {
-        output.push(wrap_lines(&paragraph, width, "> ", "> "));
+        output.push(wrap_lines(&paragraph, width, "> ", "> ", false));
     }
     output.join("\n")
 }
 
 fn emit_list(items: &[ListItem], annotation: Option<&Annotation>, width: Option<usize>) -> String {
     let root = items.first().map_or(0, |item| item.indent);
-    let mut numbers: BTreeMap<usize, usize> = BTreeMap::new();
+    let cycle = annotation.is_some_and(|value| value.name == "ol");
     let mut output = Vec::new();
     for item in items {
-        numbers.retain(|indent, _| *indent <= item.indent);
-        let at_root = item.indent == root;
-        let ordered = if at_root {
-            annotation.map_or(item.ordered, |a| a.name == "ol")
-        } else {
-            item.ordered
-        };
         let indent = " ".repeat(item.indent - root);
-        let marker = if ordered {
-            let start = if at_root {
-                annotation
-                    .and_then(|a| a.options.get("start"))
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(item.start)
-            } else {
-                item.start
-            };
-            let number = numbers.entry(item.indent).or_insert(start);
-            let marker = format!("{number}.");
-            *number = number.saturating_add(1);
-            marker
-        } else {
-            numbers.remove(&item.indent);
-            "-".into()
-        };
-        let prefix = format!("{indent}{marker} ");
+        if let Some(anchor) = &item.anchor {
+            output.push(format!("{indent}{}", anchor.emit()));
+        }
+        let prefix = format!("{indent}{} ", item.marker);
         let continuation = " ".repeat(UnicodeWidthStr::width(prefix.as_str()));
-        output.push(wrap_lines(&item.lines, width, &prefix, &continuation));
+        output.push(wrap_lines(
+            &item.lines,
+            width,
+            &prefix,
+            &continuation,
+            cycle,
+        ));
     }
     output.join("\n")
 }
 
 /// Width=off preserves physical line boundaries; wrapping never splits tokens or
 /// balanced inline backtick spans (including links with spaces inside them).
-fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -> String {
+fn wrap_lines(
+    lines: &[impl AsRef<str>],
+    width: Option<usize>,
+    first: &str,
+    rest: &str,
+    cycle: bool,
+) -> String {
     let Some(limit) = width else {
         return lines
             .iter()
             .enumerate()
-            .map(|(i, line)| format!("{}{line}", if i == 0 { first } else { rest }))
+            .map(|(i, line)| format!("{}{}", if i == 0 { first } else { rest }, line.as_ref()))
             .collect::<Vec<_>>()
             .join("\n");
     };
-    if lines.iter().any(|line| hard_break(line).is_some()) {
+    if lines.iter().any(|line| hard_break(line.as_ref()).is_some()) {
         let mut output = Vec::new();
         let mut segment = Vec::new();
         for line in lines {
+            let line = line.as_ref();
             let marker = hard_break(line);
-            segment.push(marker.map_or_else(|| line.clone(), |(body, _)| body.to_owned()));
+            segment.push(marker.map_or_else(|| line.to_owned(), |(body, _)| body.to_owned()));
             if let Some((_, suffix)) = marker {
                 let prefix = if output.is_empty() { first } else { rest };
                 output.push(format!(
                     "{}{suffix}",
-                    wrap_lines(&segment, width, prefix, rest)
+                    wrap_lines(&segment, width, prefix, rest, cycle)
                 ));
                 segment.clear();
             }
@@ -324,11 +374,16 @@ fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -
                 width,
                 if output.is_empty() { first } else { rest },
                 rest,
+                cycle,
             ));
         }
         return output.join("\n");
     }
-    let text = lines.join(" ");
+    let text = lines
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<Vec<_>>()
+        .join(" ");
     let tokens = inline::tokens(&text);
     let mut output = Vec::new();
     let mut current = first.to_owned();
@@ -339,7 +394,7 @@ fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -
             + UnicodeWidthStr::width(token);
         if has_word
             && needed > limit
-            && !unsafe_line_start(token)
+            && !unsafe_line_start(token, cycle)
             && current.trim() != "---"
             && !ascii_rule(current.trim())
         {
@@ -365,14 +420,18 @@ fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -
 
 // A wrap must not turn inline text into a heading, list, annotation, fence, or
 // table when the saved output is parsed again. Such tokens stay on the old line.
-fn unsafe_line_start(token: &str) -> bool {
-    parser::starts_block(token)
+fn unsafe_line_start(token: &str, cycle: bool) -> bool {
+    parser::starts_block(token) || (cycle && parser::cycle_marker(token).is_some())
 }
 
 fn ascii_rule(text: &str) -> bool {
     inline::ascii_rule(text).is_ok()
 }
 
+#[expect(
+    clippy::integer_division_remainder_used,
+    reason = "Backslash parity uses public document text and needs no constant-time arithmetic"
+)]
 fn hard_break(line: &str) -> Option<(&str, &str)> {
     if line.ends_with("  ") {
         return Some((line.trim_end(), &line[line.trim_end().len()..]));

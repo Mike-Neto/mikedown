@@ -2,61 +2,30 @@
 
 # Mikedown
 
-Plain-text documents with formatting instructions. The formatter writes numbers,
-spacing, wrapping, and table borders into the file itself, so the result is
-readable in a terminal or any text editor. There is no preview or rendering
-step.
+Plain text is both the storage format and the presentation.
 
-Mikedown preserves selected everyday Markdown constructs while remaining an
-independent language. Its documents can use `.mkd` or `.md`; the CLI accepts
-either extension and any other filename. Both use the same Mikedown syntax and
-formatter.
+Mikedown puts the layout directly into the document: the numbering, line breaks,
+spacing, and table borders are characters in the file. Open it in a text editor
+or terminal and the presentation is already there. Reading it requires no
+Mikedown-specific viewer.
 
-## Try it
+## The file is the view
 
-Requires Rust 1.96 or later.
-
-```sh
-cargo build --release
-./target/release/mikedown fmt examples/tour.mkd
-./target/release/mikedown fmt --write notes.mkd
-./target/release/mikedown fmt --check notes.mkd
-./target/release/mikedown fmt --write notes.md
-cat notes.mkd | ./target/release/mikedown fmt
-```
-
-Install locally with `cargo install --path .`. For a checkout with dependencies
-already cached, add `--offline` to Cargo commands.
-
-## Write ordinary text, add instructions when needed
+Here is a saved Mikedown document. Everything inside this block, including the
+layout, is text in the file:
 
 ```text
-@document mikedown=0.1.0 width=80 table=unicode
-
 # Morning routine
 
-@ol
-- Buy beans
-- Make coffee
-
-@table
-| Drink | Price |
-| Coffee | 3 |
-| Tea | 2 |
-```
-
-Formatting saves this:
-
-```text
-@document mikedown=0.1.0 table=unicode width=80
-
-# Morning routine
+A quiet start to the day.
 
 @ol
-1. Buy beans
-2. Make coffee
+1. Make coffee
+  a. Grind the beans
+  b. Heat the water
+2. Plan the day
 
-@table
+@table style=unicode
 ┌────────┬───────┐
 │ Drink  │ Price │
 ├────────┼───────┤
@@ -65,66 +34,37 @@ Formatting saves this:
 └────────┴───────┘
 ```
 
-`@document` is optional. Add `@document mikedown=0.1.0` to declare the Mikedown
-version explicitly, or omit the annotation and use the defaults. Formatting
-preserves supplied declarations and does not add one automatically. The version
-option is optional even when `@document` configures other settings. Currently
-only `0.1.0` is supported; unsupported versions produce source-located errors
-and prevent writes. See [the `.md` example](examples/notes.md).
+The small annotations are visible too. They carry the document's formatting
+choices alongside its content, so those choices travel with the file.
 
-Annotations configure the next block. Ordinary headings, lists, quotes,
-paragraphs, and tables also format without annotations. Select `style=ascii` or
-`style=pipes` on a table, use `align=left,right` for its columns, or set
-`width=off` on a prose block to preserve its physical line breaks.
+## Readable beyond the tool
 
-Only defined directive names are recognized at the beginning of a line.
-`@miguel`, `@tabletop`, and other unknown names stay ordinary prose. To write a
-literal known directive, use `\@ol`; its backslash remains visible. The former
-`--- ol ---` notation is now ordinary prose, while `---` remains a horizontal
-rule.
+A document should remain useful wherever its text can be read. Notes, plans, and
+technical documents can be opened in an ordinary editor, shared as files, or
+read in a terminal. Their changes can be reviewed as text in version control.
+The saved layout stays visible even when Mikedown is not installed.
 
-Prose wraps at 80 displayed columns by default. A wider table becomes the
-document's wrapping target. When `@document` is present, the formatter saves a
-table ID and a `wrap=table:ID` reference. Without it, the formatter derives the
-width directly. Other prose follows that table's measured width. The widest
-table wins, and the configured width remains the minimum. See
-[the width-target example](examples/width-target.mkd).
+This makes plain text a place for the finished document. The table has its
+borders, the list has its numbers, and the paragraphs have their line breaks
+before anyone opens a preview.
 
-Formatted output stays editable input. Change a cell directly inside a Unicode
-table and format again; borders and column padding are recalculated. A second
-format without edits produces identical bytes.
+## Formatting is maintenance
 
-## Library
+The formatter handles the mechanical work: wrapping prose, aligning tables,
+numbering nested lists, and keeping references consistent when items move. Those
+updates are saved into the same text that people read.
 
-```rust
-let source = "@ol\n- Buy beans\n- Make coffee\n";
-let formatted = mikedown::format(source).expect("valid Mikedown");
-assert_eq!(formatted, "@ol\n1. Buy beans\n2. Make coffee\n");
-```
+The result remains editable input. Change a table cell, insert a list item, or
+revise a paragraph directly in the document; formatting brings the layout back
+into order. Running it again without edits leaves the document unchanged.
 
-`format(&str)` returns `Result<String, Vec<Diagnostic>>`. Diagnostics contain
-one-based source line and column numbers. The library has no filesystem or
-editor dependencies. The current parser returns the first document error.
+## Project status
 
-## Status and development
+Mikedown is experimental. The formatter CLI and Rust library are implemented;
+Zed and Obsidian integrations are planned. Documents can use `.mkd` or `.md`.
+Mikedown is an independent language with support for selected Markdown syntax.
 
-v0.1 implements the spec, Rust library, formatter binary, and examples. Zed and
-Obsidian plugins are planned in [TODO.md](TODO.md); they are not implemented
-yet. See [SPEC.md](SPEC.md) for the complete syntax and formatting rules.
-
-```sh
-cargo test
-cargo fmt --check
-cargo clippy --all-targets
-```
-
-Tests cover table round trips, Unicode widths, nested lists, wrapping stability,
-CLI pipelines, atomic replacements, and batch validation. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for architecture and lint conventions.
-
-Pipe tables are the default for `.mkd`, `.md`, and stdin. Existing unannotated
-bordered tables become pipes; use `@document table=unicode` or
-`@table style=ascii` to request borders. Selected Markdown preservation includes
-front matter, literal HTML and indented code, reference definitions, hard
-breaks, links and images, Setext headings, thematic breaks, and ordered list
-starts. Full CommonMark/GFM conformance remains outside this milestone.
+Explore the [example document](examples/tour.mkd) to see more of the format. The
+[language specification](SPEC.md) covers syntax, formatting, and CLI usage. The
+[roadmap](TODO.md) describes what comes next, and the
+[contributing guide](CONTRIBUTING.md) covers development.

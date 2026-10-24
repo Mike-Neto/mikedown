@@ -1,10 +1,12 @@
+extern crate alloc;
+
 mod cli_error;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 
 use cli_error::CliError;
 
-use std::collections::BTreeSet;
+use alloc::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
@@ -198,7 +200,11 @@ impl Replacement {
 
 impl Drop for Replacement {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.temporary);
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "Temporary-file cleanup is best effort and must not panic during destruction"
+        )]
+        let _: io::Result<()> = fs::remove_file(&self.temporary);
     }
 }
 

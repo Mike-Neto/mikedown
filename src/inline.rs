@@ -1,7 +1,7 @@
 //! Shared inline recognition. Prose treats backslashes literally; tables protect
 //! the following scalar. Both retain exact spelling and match backtick-run lengths.
 
-use std::iter;
+use core::iter;
 
 use nom::branch::alt;
 use nom::bytes::complete::{take_while, take_while1};
@@ -38,11 +38,11 @@ pub(crate) fn fragments(text: &str, escapes: bool) -> impl Iterator<Item = Fragm
         let ticks = text.starts_with('`');
         let protected = code != 0 || ticks || (escapes && text.starts_with('\\'));
         if ticks {
-            if code == 0 {
-                code = text.len();
-            } else if code == text.len() {
-                code = 0;
-            }
+            code = match code {
+                0 => text.len(),
+                length if length == text.len() => 0,
+                length => length,
+            };
         }
         Some(Fragment { text, protected })
     })
@@ -134,18 +134,61 @@ pub(crate) fn tokens(text: &str) -> Vec<&str> {
     tokens
 }
 
-pub(crate) fn cells(text: &str, delimiter: char) -> Vec<String> {
+pub(crate) struct ItemReference<'source> {
+    pub start: usize,
+    pub end: usize,
+    pub target_offset: usize,
+    pub id: &'source str,
+}
+
+pub(crate) fn item_references(text: &str) -> Vec<ItemReference<'_>> {
+    let mut references = Vec::new();
+    let mut offset = 0;
+    while offset < text.len() {
+        let tail = &text[offset..];
+        if let Some(escaped) = tail.strip_prefix('\\') {
+            offset += 1 + escaped.chars().next().map_or(0, char::len_utf8);
+            continue;
+        }
+        if tail.starts_with('[')
+            && let Some(label_end) = balanced(tail, '[', ']')
+            && tail[label_end..].starts_with('(')
+            && let Some(destination_end) = balanced(&tail[label_end..], '(', ')')
+        {
+            let end = label_end + destination_end;
+            let destination = &tail[label_end + 1..end - 1];
+            if let Some(id) = destination.strip_prefix("item:") {
+                references.push(ItemReference {
+                    start: offset,
+                    end: offset + end,
+                    target_offset: offset + label_end + 1 + "item:".len(),
+                    id,
+                });
+            }
+            offset += end;
+            continue;
+        }
+        if let Some(length) = protected_len(tail) {
+            offset += length;
+        } else {
+            offset += tail.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    references
+}
+
+pub(crate) fn cells(text: &str, delimiter: char) -> Vec<&str> {
     let mut cells = Vec::new();
     let mut begin = 0;
     let mut offset = 0;
     for fragment in fragments(text, true) {
         if !fragment.protected && fragment.text.starts_with(delimiter) {
-            cells.push(text[begin..offset].trim().to_owned());
+            cells.push(text[begin..offset].trim());
             begin = offset + fragment.text.len();
         }
         offset += fragment.text.len();
     }
-    cells.push(text[begin..].trim().to_owned());
+    cells.push(text[begin..].trim());
     cells
 }
 

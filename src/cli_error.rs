@@ -66,7 +66,7 @@ fn render_batch(errors: &[CliError]) -> String {
     reason = "Tests inspect known malformed input and explicitly constructed error variants"
 )]
 mod tests {
-    use std::error::Error;
+    use core::error::Error;
     use std::io;
     use std::path::{Path, PathBuf};
 

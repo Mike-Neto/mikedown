@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
 
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while_m_n, take_while1};
@@ -8,7 +8,9 @@ use nom::multi::many0;
 use nom::sequence::{preceded, terminated};
 use nom::{IResult, Offset, Parser};
 
+use crate::list::GREEK;
 use crate::table::{Alignment, Style, Table};
+use crate::text::Text;
 use crate::{Annotation, Diagnostic, error};
 
 pub(crate) struct Document {
@@ -24,9 +26,9 @@ pub(crate) struct Block {
 }
 
 pub(crate) enum Kind {
-    Paragraph(Vec<String>),
-    Heading(usize, String),
-    Quote(Vec<String>),
+    Paragraph(Vec<Text>),
+    Heading(usize, Text),
+    Quote(Vec<Text>),
     List(Vec<ListItem>),
     Table(Table),
     Literal(String),
@@ -34,9 +36,13 @@ pub(crate) enum Kind {
 
 pub(crate) struct ListItem {
     pub indent: usize,
+    pub depth: usize,
     pub ordered: bool,
     pub start: usize,
-    pub lines: Vec<String>,
+    pub lines: Vec<Text>,
+    pub anchor: Option<Annotation>,
+    pub marker: String,
+    pub path: String,
 }
 
 pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
@@ -64,7 +70,11 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
             index += 1;
             continue;
         }
-        if !indented(line) && is_annotation(line) {
+        let cycle = pending.as_ref().is_some_and(|a| a.name == "ol");
+        if !indented(line) && item_annotation(line) && !cycle {
+            return Err(error(index + 1, "@item is only valid inside an @ol list"));
+        }
+        if !indented(line) && is_annotation(line) && !(cycle && item_annotation(line)) {
             let annotation = parse_annotation(line, index + 1)?;
             if let Some(previous) = pending.take() {
                 return Err(error(previous.line, "annotation has no target block"));
@@ -88,6 +98,7 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
             &lines,
             &mut index,
             pending.as_ref().is_some_and(|a| a.name == "table"),
+            cycle,
         )?;
         if let Some(annotation) = &pending {
             let compatible = matches!(
@@ -119,9 +130,17 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
     Ok(document)
 }
 
-fn parse_block(lines: &[&str], index: &mut usize, strict_table: bool) -> Result<Kind, Diagnostic> {
+fn parse_block(
+    lines: &[&str],
+    index: &mut usize,
+    strict_table: bool,
+    cycle: bool,
+) -> Result<Kind, Diagnostic> {
     let start = *index;
     let line = lines[start];
+    if cycle && !is_rule(line) && (cycle_marker(line).is_some() || item_annotation(line)) {
+        return parse_list(lines, index, true);
+    }
     if indented(line) || html_start(line).is_some() || reference(line) {
         return Ok(parse_literal(lines, index));
     }
@@ -130,7 +149,7 @@ fn parse_block(lines: &[&str], index: &mut usize, strict_table: bool) -> Result<
     }
     if let Some((level, text)) = heading(line) {
         *index += 1;
-        return Ok(Kind::Heading(level, text.to_owned()));
+        return Ok(Kind::Heading(level, located(text, line, start + 1)));
     }
     if is_rule(line) {
         *index += 1;
@@ -140,13 +159,17 @@ fn parse_block(lines: &[&str], index: &mut usize, strict_table: bool) -> Result<
         let mut body = Vec::new();
         while *index < lines.len() && is_quote(lines[*index]) {
             let content = quote(lines[*index]).map_or("", |(_, content)| content);
-            body.push(content.strip_prefix(' ').unwrap_or(content).to_owned());
+            body.push(located(
+                content.strip_prefix(' ').unwrap_or(content),
+                lines[*index],
+                *index + 1,
+            ));
             *index += 1;
         }
         return Ok(Kind::Quote(body));
     }
     if list_marker(line).is_some() {
-        return parse_list(lines, index);
+        return parse_list(lines, index, false);
     }
     if Table::starts(line) || table_at(lines, start) {
         let gfm = table_at(lines, start);
@@ -177,13 +200,13 @@ fn parse_block(lines: &[&str], index: &mut usize, strict_table: bool) -> Result<
             })
             .collect();
         let rows: Vec<&str> = normalized.iter().map(String::as_str).collect();
-        return match Table::parse(&rows, start + 1) {
+        return match Table::parse(&rows, body, start + 1) {
             Ok(table) => Ok(Kind::Table(table)),
             Err(diagnostic) if strict_table => Err(diagnostic),
             Err(_) => Ok(Kind::Literal(body.join("\n"))),
         };
     }
-    let mut body = vec![line.trim_start().to_owned()];
+    let mut body = vec![located(line.trim_start(), line, start + 1)];
     *index += 1;
     while *index < lines.len() && !lines[*index].trim().is_empty() {
         if setext(lines[*index]) {
@@ -195,7 +218,11 @@ fn parse_block(lines: &[&str], index: &mut usize, strict_table: bool) -> Result<
         if !indented(next) && ((!generic_html && starts_block(next)) || table_at(lines, *index)) {
             break;
         }
-        body.push(lines[*index].trim_start().to_owned());
+        body.push(located(
+            lines[*index].trim_start(),
+            lines[*index],
+            *index + 1,
+        ));
         *index += 1;
     }
     Ok(Kind::Paragraph(body))
@@ -250,14 +277,47 @@ fn parse_fence(
     Err(error(start + 1, "unclosed code fence"))
 }
 
-fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
+fn parse_list(lines: &[&str], index: &mut usize, cycle: bool) -> Result<Kind, Diagnostic> {
     let mut items: Vec<ListItem> = Vec::new();
     let mut levels = Vec::new();
     while *index < lines.len() && !lines[*index].trim().is_empty() {
         if is_rule(lines[*index]) {
             break;
         }
-        if let Some((indent, ordered, content)) = list_marker(lines[*index]) {
+        let anchor = if item_annotation(lines[*index]) {
+            if !cycle {
+                return Err(error(*index + 1, "@item is only valid inside an @ol list"));
+            }
+            let annotation = parse_annotation(lines[*index], *index + 1)?;
+            if !annotation.options.contains_key("id") {
+                return Err(error(*index + 1, "@item requires id=NAME"));
+            }
+            let indent = lines[*index].len() - lines[*index].trim_start().len();
+            if lines[*index][..indent].contains('\t') {
+                return Err(error(*index + 1, "use spaces to indent lists"));
+            }
+            if lines
+                .get(*index + 1)
+                .filter(|line| !is_rule(line))
+                .and_then(|line| cycle_marker(line))
+                .is_none_or(|(next_indent, _, _)| next_indent != indent)
+            {
+                return Err(error(
+                    *index + 1,
+                    "@item must immediately precede an item at the same indentation",
+                ));
+            }
+            *index += 1;
+            Some(annotation)
+        } else {
+            None
+        };
+        let marker = if cycle {
+            cycle_marker(lines[*index])
+        } else {
+            list_marker(lines[*index])
+        };
+        if let Some((indent, ordered, content)) = marker {
             if lines[*index][..indent].contains('\t') {
                 return Err(error(*index + 1, "use spaces to indent lists"));
             }
@@ -269,6 +329,7 @@ fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
             }
             items.push(ListItem {
                 indent: (levels.len() - 1) * 2,
+                depth: levels.len() - 1,
                 ordered,
                 start: lines[*index]
                     .trim_start()
@@ -276,7 +337,10 @@ fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
                     .next()
                     .and_then(|n| n.parse().ok())
                     .unwrap_or(1),
-                lines: vec![content.to_owned()],
+                lines: vec![located(content, lines[*index], *index + 1)],
+                anchor,
+                marker: String::new(),
+                path: String::new(),
             });
         } else {
             let indentation = lines[*index].len() - lines[*index].trim_start().len();
@@ -285,12 +349,28 @@ fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
                 break;
             }
             if let Some(item) = items.last_mut() {
-                item.lines.push(lines[*index].trim_start().to_owned());
+                item.lines.push(located(
+                    lines[*index].trim_start(),
+                    lines[*index],
+                    *index + 1,
+                ));
             }
         }
         *index += 1;
     }
     Ok(Kind::List(items))
+}
+
+fn located(content: &str, original: &str, line: usize) -> Text {
+    Text::at(
+        content,
+        line,
+        original[..original.offset(content)].chars().count() + 1,
+    )
+}
+
+fn item_annotation(line: &str) -> bool {
+    annotation_name(line).is_ok_and(|(_, name)| name == "item")
 }
 
 // Match the existing Unicode whitespace behavior rather than nom's ASCII space0.
@@ -323,6 +403,7 @@ fn annotation_options(name: &str) -> Option<&'static [&'static str]> {
         "ol" => Some(&["width", "start"]),
         "ul" | "paragraph" | "quote" => Some(&["width"]),
         "table" => Some(&["style", "id", "align"]),
+        "item" => Some(&["id"]),
         _ => None,
     }
 }
@@ -571,6 +652,31 @@ fn list_marker(line: &str) -> Option<(usize, bool, &str)> {
     list_syntax(line).ok().map(|(_, marker)| marker)
 }
 
+fn cycle_syntax(input: &str) -> IResult<&str, (usize, bool, &str)> {
+    let (input, indentation) = whitespace(input)?;
+    let (input, ordered) = alt((
+        value(false, one_of("-*+")),
+        value(
+            true,
+            (
+                alt((
+                    digit1,
+                    take_while1(|ch: char| ch.is_ascii_lowercase()),
+                    take_while1(|ch| GREEK.contains(ch)),
+                )),
+                char('.'),
+            ),
+        ),
+    ))
+    .parse(input)?;
+    let (input, content) = alt((eof, preceded(char(' '), rest))).parse(input)?;
+    Ok((input, (indentation.len(), ordered, content.trim_start())))
+}
+
+pub(crate) fn cycle_marker(line: &str) -> Option<(usize, bool, &str)> {
+    cycle_syntax(line).ok().map(|(_, marker)| marker)
+}
+
 fn option_pair(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, key) = terminated(take_while(|ch| ch != '='), char('=')).parse(input)?;
     let (input, value) = rest(input)?;
@@ -589,6 +695,7 @@ fn parse_annotation(line: &str, number: usize) -> Result<Annotation, Diagnostic>
     let (_, tokens) = annotation_tokens(remaining)
         .map_err(|_parse_error| error(number, "invalid annotation options"))?;
     let mut options = BTreeMap::new();
+    let mut id_column = 1;
     for token in tokens {
         let column = line[..line.offset(token)].chars().count() + 1;
         let failure = |message: String| Diagnostic {
@@ -623,12 +730,16 @@ fn parse_annotation(line: &str, number: usize) -> Result<Annotation, Diagnostic>
         if !valid {
             return Err(failure(format!("invalid value '{value}' for {key}")));
         }
+        if key == "id" {
+            id_column = column;
+        }
         options.insert(key.to_owned(), value.to_owned());
     }
     Ok(Annotation {
         name: name.to_owned(),
         options,
         line: number,
+        id_column,
     })
 }
 
@@ -651,7 +762,7 @@ fn identifier(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-fn valid_id(value: &str) -> bool {
+pub(crate) fn valid_id(value: &str) -> bool {
     all_consuming(identifier).parse(value).is_ok()
 }
 

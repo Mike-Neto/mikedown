@@ -4,12 +4,12 @@
     reason = "Integration tests use unwraps to report failed assertions and filesystem operations"
 )]
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Workspace(PathBuf);
 
@@ -38,7 +38,11 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "Test-directory cleanup is best effort and must not panic during destruction"
+        )]
+        let _: io::Result<()> = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -83,6 +87,28 @@ fn stdin_and_stdout_are_a_formatter_pipeline() {
     assert!(output.status.success());
     assert_eq!(output.stdout, b"# Heading\n");
     assert_eq!(fs::read_to_string(path).unwrap(), "#    Heading\n");
+}
+
+#[test]
+fn item_reference_errors_prevent_all_batch_writes() {
+    let workspace = Workspace::new();
+    let good_source = "#    Heading\n";
+    let bad_source = "See [](item:missing).\n";
+    let good = workspace.file("good.mkd", good_source);
+    let bad = workspace.file("bad.mkd", bad_source);
+    let output = command()
+        .args(["fmt", "--write"])
+        .arg(&good)
+        .arg(&bad)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(good).unwrap(), good_source);
+    assert_eq!(fs::read_to_string(bad).unwrap(), bad_source);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("bad.mkd"));
+    assert!(stderr.contains("line: 1, column: 13"));
+    assert!(stderr.contains("unknown item reference 'missing'"));
 }
 
 #[test]
