@@ -270,9 +270,11 @@ Omitted input or `-` reads stdin in stdout mode. Stdout mode accepts one input a
 does not scan directories; shells may expand globs. UTF-8 input is required. Both `.mkd` and `.md`
 documents use the same syntax and formatting behavior; file extensions are not enforced.
 
-Exit codes: `0` for success/already formatted, `1` for differences in check mode, `2` for usage, parsing,
-UTF-8, or I/O errors. Check reports and diagnostics go to stderr; formatted documents go only to stdout.
-`--help` and `--version` exit zero.
+Exit codes: `0` for success/already formatted, `1` for differences in check mode or runtime failures
+(document parsing, UTF-8, I/O, or write validation), and `2` for command-line usage errors. Runtime
+failures use Rust's standard `Result` reporting: `Error: ` followed by the error's debug representation.
+Check reports and diagnostics go to stderr; formatted documents go only to stdout. `--help` and
+`--version` exit zero.
 
 Write mode validates all inputs before changing any file, rejects duplicate paths and symlinks, and
 stages all changed output in exclusive temporary files in the destination directories. It preserves

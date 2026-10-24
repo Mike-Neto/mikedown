@@ -1,9 +1,3 @@
-#![allow(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    reason = "The CLI owns stdout output and stderr diagnostics"
-)]
-
 mod cli_error;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
@@ -36,7 +30,7 @@ struct FormatArgs {
     /// Validate all inputs, then atomically replace changed files.
     #[arg(long, conflicts_with = "check")]
     write: bool,
-    /// Report changes without writing (exit 1); errors exit 2.
+    /// Report changes without writing (exit 1); runtime errors exit 1, usage errors exit 2.
     #[arg(long)]
     check: bool,
     /// Input paths; omit or use - for stdin in stdout mode.
@@ -58,16 +52,10 @@ struct Input {
     permissions: Option<Permissions>,
 }
 
-fn main() -> ExitCode {
-    match run() {
-        Ok(code) => ExitCode::from(code),
-        Err(error) => {
-            eprintln!("mikedown: {error}");
-            ExitCode::from(2)
-        }
-    }
-}
-
+#[expect(
+    clippy::print_stdout,
+    reason = "The CLI prints a trailing newline after its help output"
+)]
 fn arguments() -> Result<Option<(Mode, Vec<PathBuf>)>, CliError> {
     let cli = Cli::parse();
     let Some(Command::Fmt(arguments)) = cli.command else {
@@ -103,6 +91,10 @@ fn arguments() -> Result<Option<(Mode, Vec<PathBuf>)>, CliError> {
     Ok(Some((mode, paths)))
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "Check mode reports files needing formatting on stderr"
+)]
 fn run() -> Result<u8, CliError> {
     let Some((mode, paths)) = arguments()? else {
         return Ok(0);
@@ -254,4 +246,8 @@ fn stage(input: &Input) -> Result<Replacement, CliError> {
         .map_err(|source| CliError::file(&input.path, source))?;
     drop(file);
     Ok(replacement)
+}
+
+fn main() -> Result<ExitCode, CliError> {
+    run().map(ExitCode::from)
 }

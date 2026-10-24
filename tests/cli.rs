@@ -1,8 +1,7 @@
 #![allow(
     clippy::tests_outside_test_module,
     clippy::unwrap_used,
-    clippy::panic,
-    reason = "Integration assertions report invalid output and failed filesystem operations"
+    reason = "Integration tests use unwraps to report failed assertions and filesystem operations"
 )]
 
 use std::env;
@@ -143,7 +142,7 @@ fn whole_batch_validates_before_writes() {
         .args([&good, &bad])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(fs::read_to_string(&good).unwrap(), "#   Good\n");
     assert_eq!(
         fs::read_to_string(&bad).unwrap(),
@@ -152,7 +151,7 @@ fn whole_batch_validates_before_writes() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("bad.mkd:1:12: invalid value")
+            .contains("line: 1, column: 12, message: \"invalid value")
     );
     let missing = workspace.0.join("missing.mkd");
     assert_eq!(
@@ -163,7 +162,7 @@ fn whole_batch_validates_before_writes() {
             .unwrap()
             .status
             .code(),
-        Some(2)
+        Some(1)
     );
     assert_eq!(fs::read_to_string(good).unwrap(), "#   Good\n");
     assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 2);
@@ -220,7 +219,7 @@ fn invalid_usage_and_invalid_utf8_do_not_write() {
             .unwrap()
             .status
             .code(),
-        Some(2)
+        Some(1)
     );
     assert_eq!(fs::read(path).unwrap(), [0xff, 0xfe]);
     let path = workspace.file("-note.mkd", "#    Hello\n");
@@ -243,7 +242,7 @@ fn duplicate_write_inputs_are_rejected_before_changes() {
         .args([&path, &path])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(fs::read_to_string(path).unwrap(), "#   Hello\n");
 }
 
@@ -262,7 +261,7 @@ fn symlink_write_is_rejected_before_other_files_change() {
         .args([&other, &link])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(fs::read_to_string(&original).unwrap(), "#   Hello\n");
     assert_eq!(fs::read_to_string(&other).unwrap(), "#   Other\n");
     assert!(
@@ -285,9 +284,13 @@ fn help_version_and_error_output() {
             .starts_with(b"mikedown 0.1.0")
     );
     let output = run(&["fmt"], Some("@ol\ntext"));
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, b"");
-    assert!(String::from_utf8(output.stderr).unwrap().contains("-:1:1:"));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("Error: Batch([Format {"));
+    assert!(stderr.contains("path: \"-\""));
+    assert!(stderr.contains("line: 1, column: 1"));
+    assert!(stderr.contains("ol annotation has an incompatible target block"));
 }
 
 #[test]
@@ -427,10 +430,10 @@ fn non_utf8_path_arguments_reach_file_io() {
             command.arg(mode);
         }
         let output = command.arg(&path).output().unwrap();
-        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.status.code(), Some(1));
         assert_eq!(output.stdout, b"");
         let error = String::from_utf8(output.stderr).unwrap();
-        assert!(error.starts_with("mikedown:"), "{error}");
+        assert!(error.starts_with("Error: Batch([FileIo {"), "{error}");
         assert!(error.contains("missing-"), "{error}");
         assert!(!error.contains("Usage:"), "{error}");
     }
@@ -448,18 +451,19 @@ fn batch_errors_report_all_failures_without_writing_valid_inputs() {
         .args([&good, &bad, &missing, &other_bad])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let bad_position = stderr
-        .find("bad.mkd:1:12: invalid value 'invalid' for width")
-        .unwrap();
-    let missing_position = stderr.find("missing.mkd:").unwrap();
-    let other_position = stderr
-        .find("other-bad.mkd:1:1: unclosed code fence")
-        .unwrap();
+    let bad_position = stderr.find("bad.mkd").unwrap();
+    let missing_position = stderr.find("missing.mkd").unwrap();
+    let other_position = stderr.find("other-bad.mkd").unwrap();
+    assert!(stderr.contains("line: 1, column: 12"));
+    assert!(stderr.contains("invalid value 'invalid' for width"));
+    assert!(stderr.contains("FileIo {"));
+    assert!(stderr.contains("line: 1, column: 1"));
+    assert!(stderr.contains("unclosed code fence"));
     assert!(bad_position < missing_position && missing_position < other_position);
-    assert!(stderr.starts_with("mikedown: "));
+    assert!(stderr.starts_with("Error: Batch(["));
     assert_eq!(fs::read_to_string(good).unwrap(), "#   Good\n");
     assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 3);
 }
@@ -519,11 +523,13 @@ fn unsupported_markdown_document_version_prevents_batch_writes() {
         .args([&good, &future])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, b"");
-    assert!(String::from_utf8(output.stderr).unwrap().contains(
-        "future.md:1:11: unsupported Mikedown version '999.0.0'; supported version is 0.1.0"
-    ));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("Error: Batch([Format {"));
+    assert!(stderr.contains("future.md"));
+    assert!(stderr.contains("line: 1, column: 11"));
+    assert!(stderr.contains("unsupported Mikedown version '999.0.0'; supported version is 0.1.0"));
     assert_eq!(fs::read_to_string(good).unwrap(), "#   Notes\n");
     assert_eq!(fs::read_to_string(future).unwrap(), original);
 }
