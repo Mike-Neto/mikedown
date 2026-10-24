@@ -8,12 +8,10 @@ measured table width. Edit the long cell and format again to see the document
 adapt.
 
 @table id=release-plan
-┌───────────┬─────────────────────────────────────────────────────────────────┐
-│ Milestone │ Deliverable                                                     │
-├───────────┼─────────────────────────────────────────────────────────────────┤
-│ v0.1      │ Specification, reusable Rust formatter, and command-line binary │
-│ Later     │ Zed and Obsidian plugins sharing the same formatting rules      │
-└───────────┴─────────────────────────────────────────────────────────────────┘
+| Milestone | Deliverable                                                     |
+| --------- | --------------------------------------------------------------- |
+| v0.1      | Specification, reusable Rust formatter, and command-line binary |
+| Later     | Zed and Obsidian plugins sharing the same formatting rules      |
 
 @paragraph width=30
 This paragraph keeps its own

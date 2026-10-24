@@ -93,9 +93,7 @@ fn format_document(document: &mut Document) -> Result<String, Diagnostic> {
         .annotation
         .as_ref()
         .and_then(|a| a.options.get("table"))
-        .map_or(Style::Unicode, |s| {
-            Style::parse(s).unwrap_or(Style::Unicode)
-        });
+        .map_or(Style::Pipes, |s| Style::parse(s).unwrap_or(Style::Pipes));
     let TableLayout {
         ids,
         widest,
@@ -134,6 +132,9 @@ fn format_document(document: &mut Document) -> Result<String, Diagnostic> {
     }
 
     let mut pieces = Vec::new();
+    if let Some(front_matter) = &document.front_matter {
+        pieces.push(front_matter.clone());
+    }
     if let Some(annotation) = &document.annotation {
         pieces.push(annotation.emit());
     }
@@ -185,7 +186,13 @@ fn measure_tables(
             return Err(error(block.line, format!("duplicate table ID '{id}'")));
         }
         if let Kind::Table(table) = &block.kind {
-            if table.has_alignment()
+            let style = block
+                .annotation
+                .as_ref()
+                .and_then(|a| a.options.get("style"))
+                .map_or(default_style, |s| Style::parse(s).unwrap_or(default_style));
+            if style != Style::Pipes
+                && table.has_alignment()
                 && block
                     .annotation
                     .as_ref()
@@ -198,11 +205,6 @@ fn measure_tables(
                     .options
                     .insert("align".into(), table.alignment_option());
             }
-            let style = block
-                .annotation
-                .as_ref()
-                .and_then(|a| a.options.get("style"))
-                .map_or(default_style, |s| Style::parse(s).unwrap_or(default_style));
             let alignment = block
                 .annotation
                 .as_ref()
@@ -270,9 +272,9 @@ fn emit_list(items: &[ListItem], annotation: Option<&Annotation>, width: Option<
                 annotation
                     .and_then(|a| a.options.get("start"))
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(1)
+                    .unwrap_or(item.start)
             } else {
-                1
+                item.start
             };
             let number = numbers.entry(item.indent).or_insert(start);
             let marker = format!("{number}.");
@@ -300,6 +302,31 @@ fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -
             .collect::<Vec<_>>()
             .join("\n");
     };
+    if lines.iter().any(|line| hard_break(line).is_some()) {
+        let mut output = Vec::new();
+        let mut segment = Vec::new();
+        for line in lines {
+            let marker = hard_break(line);
+            segment.push(marker.map_or_else(|| line.clone(), |(body, _)| body.to_owned()));
+            if let Some((_, suffix)) = marker {
+                let prefix = if output.is_empty() { first } else { rest };
+                output.push(format!(
+                    "{}{suffix}",
+                    wrap_lines(&segment, width, prefix, rest)
+                ));
+                segment.clear();
+            }
+        }
+        if !segment.is_empty() {
+            output.push(wrap_lines(
+                &segment,
+                width,
+                if output.is_empty() { first } else { rest },
+                rest,
+            ));
+        }
+        return output.join("\n");
+    }
     let text = lines.join(" ");
     let tokens = inline::tokens(&text);
     let mut output = Vec::new();
@@ -343,4 +370,12 @@ fn unsafe_line_start(token: &str) -> bool {
 
 fn ascii_rule(text: &str) -> bool {
     inline::ascii_rule(text).is_ok()
+}
+
+fn hard_break(line: &str) -> Option<(&str, &str)> {
+    if line.ends_with("  ") {
+        return Some((line.trim_end(), &line[line.trim_end().len()..]));
+    }
+    let slashes = line.chars().rev().take_while(|c| *c == '\\').count();
+    (slashes % 2 == 1).then(|| (&line[..line.len() - 1], "\\"))
 }

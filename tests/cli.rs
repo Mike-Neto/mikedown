@@ -524,3 +524,19 @@ fn unsupported_markdown_document_version_prevents_batch_writes() {
     assert_eq!(fs::read_to_string(good).unwrap(), "#   Notes\n");
     assert_eq!(fs::read_to_string(future).unwrap(), original);
 }
+
+#[test]
+fn markdown_grammar_is_shared_by_extensions_and_stdin() {
+    let workspace = Workspace::new();
+    let source = include_str!("fixtures/hard-breaks.input.md");
+    let expected = include_str!("fixtures/hard-breaks.expected.md");
+    for name in ["readme.md", "readme.mkd"] {
+        let path = workspace.file(name, source);
+        let output = run(&["fmt", path.to_str().unwrap()], None);
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+    let output = run(&["fmt"], Some(source));
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+}

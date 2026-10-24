@@ -4,7 +4,7 @@ Plain-text documents with formatting instructions. The formatter writes numbers,
 spacing, wrapping, and table borders into the file itself, so the result is
 readable in a terminal or any text editor. There is no preview or rendering step.
 
-Mikedown borrows familiar Markdown syntax but is an independent language. Its
+Mikedown preserves selected everyday Markdown constructs while remaining an independent language. Its
 documents can use `.mkd` or `.md`; the CLI accepts either extension and any
 other filename. Both use the same Mikedown syntax and formatter.
 
@@ -116,3 +116,10 @@ cargo clippy --all-targets
 Tests cover table round trips, Unicode widths, nested lists, wrapping stability,
 CLI pipelines, atomic replacements, and batch validation. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for architecture and lint conventions.
+
+Pipe tables are the default for `.mkd`, `.md`, and stdin. Existing unannotated
+bordered tables become pipes; use `@document table=unicode` or
+`@table style=ascii` to request borders. Selected Markdown preservation includes
+front matter, literal HTML and indented code, reference definitions, hard breaks,
+links and images, Setext headings, thematic breaks, and ordered list starts.
+Full CommonMark/GFM conformance remains outside this milestone.

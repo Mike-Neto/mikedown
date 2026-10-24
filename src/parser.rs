@@ -13,6 +13,7 @@ use crate::{Annotation, Diagnostic, error};
 
 pub(crate) struct Document {
     pub annotation: Option<Annotation>,
+    pub front_matter: Option<String>,
     pub blocks: Vec<Block>,
 }
 
@@ -34,6 +35,7 @@ pub(crate) enum Kind {
 pub(crate) struct ListItem {
     pub indent: usize,
     pub ordered: bool,
+    pub start: usize,
     pub lines: Vec<String>,
 }
 
@@ -41,9 +43,20 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
     let lines: Vec<&str> = source.lines().collect();
     let mut document = Document {
         annotation: None,
+        front_matter: None,
         blocks: Vec::new(),
     };
     let mut index = 0;
+    if lines.first() == Some(&"---") {
+        index = 1;
+        while index < lines.len() && !matches!(lines[index], "---" | "...") {
+            index += 1;
+        }
+        if index < lines.len() {
+            index += 1;
+        }
+        document.front_matter = Some(lines[..index].join("\n"));
+    }
     let mut pending: Option<Annotation> = None;
     while index < lines.len() {
         let line = lines[index];
@@ -51,7 +64,7 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
             index += 1;
             continue;
         }
-        if is_annotation(line) {
+        if !indented(line) && is_annotation(line) {
             let annotation = parse_annotation(line, index + 1)?;
             if let Some(previous) = pending.take() {
                 return Err(error(previous.line, "annotation has no target block"));
@@ -71,7 +84,11 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
             continue;
         }
         let start = index;
-        let kind = parse_block(&lines, &mut index)?;
+        let kind = parse_block(
+            &lines,
+            &mut index,
+            pending.as_ref().is_some_and(|a| a.name == "table"),
+        )?;
         if let Some(annotation) = &pending {
             let compatible = matches!(
                 (&*annotation.name, &kind),
@@ -102,9 +119,12 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
     Ok(document)
 }
 
-fn parse_block(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
+fn parse_block(lines: &[&str], index: &mut usize, strict_table: bool) -> Result<Kind, Diagnostic> {
     let start = *index;
     let line = lines[start];
+    if indented(line) || html_start(line).is_some() || reference(line) {
+        return Ok(parse_literal(lines, index));
+    }
     if let Some((character, count)) = fence(line) {
         return parse_fence(lines, index, character, count);
     }
@@ -114,19 +134,13 @@ fn parse_block(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
     }
     if is_rule(line) {
         *index += 1;
-        return Ok(Kind::Literal("---".into()));
+        return Ok(Kind::Literal(line.into()));
     }
     if is_quote(line) {
         let mut body = Vec::new();
         while *index < lines.len() && is_quote(lines[*index]) {
             let content = quote(lines[*index]).map_or("", |(_, content)| content);
-            body.push(
-                content
-                    .strip_prefix(' ')
-                    .unwrap_or(content)
-                    .trim_end()
-                    .to_owned(),
-            );
+            body.push(content.strip_prefix(' ').unwrap_or(content).to_owned());
             *index += 1;
         }
         return Ok(Kind::Quote(body));
@@ -134,23 +148,90 @@ fn parse_block(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
     if list_marker(line).is_some() {
         return parse_list(lines, index);
     }
-    if Table::starts(line) {
-        let mut body = Vec::new();
-        while *index < lines.len() && Table::starts(lines[*index]) {
-            body.push(lines[*index]);
+    if Table::starts(line) || table_at(lines, start) {
+        let gfm = table_at(lines, start);
+        *index += 1;
+        while *index < lines.len()
+            && !lines[*index].trim().is_empty()
+            && !is_annotation(lines[*index])
+            && (Table::starts(lines[*index]) || lines[*index].contains('|'))
+        {
             *index += 1;
         }
-        return Ok(Kind::Table(Table::parse(&body, start + 1)?));
+        let body = &lines[start..*index];
+        let normalized: Vec<String> = body
+            .iter()
+            .map(|line| {
+                let text = line.trim();
+                if gfm {
+                    format!(
+                        "|{}|",
+                        text.strip_prefix('|')
+                            .unwrap_or(text)
+                            .strip_suffix('|')
+                            .unwrap_or_else(|| text.strip_prefix('|').unwrap_or(text))
+                    )
+                } else {
+                    (*line).to_owned()
+                }
+            })
+            .collect();
+        let rows: Vec<&str> = normalized.iter().map(String::as_str).collect();
+        return match Table::parse(&rows, start + 1) {
+            Ok(table) => Ok(Kind::Table(table)),
+            Err(diagnostic) if strict_table => Err(diagnostic),
+            Err(_) => Ok(Kind::Literal(body.join("\n"))),
+        };
     }
-    let mut body = vec![line.trim().to_owned()];
+    let mut body = vec![line.trim_start().to_owned()];
     *index += 1;
-    while *index < lines.len() && !lines[*index].trim().is_empty() && !starts_block(lines[*index]) {
-        body.push(lines[*index].trim().to_owned());
+    while *index < lines.len() && !lines[*index].trim().is_empty() {
+        if setext(lines[*index]) {
+            *index += 1;
+            return Ok(Kind::Literal(lines[start..*index].join("\n")));
+        }
+        let next = lines[*index];
+        let generic_html = html_start(next) == Some("") && !html_block_tag(next);
+        if !indented(next) && ((!generic_html && starts_block(next)) || table_at(lines, *index)) {
+            break;
+        }
+        body.push(lines[*index].trim_start().to_owned());
         *index += 1;
     }
     Ok(Kind::Paragraph(body))
 }
 
+fn parse_literal(lines: &[&str], index: &mut usize) -> Kind {
+    let start = *index;
+    let line = lines[start];
+    let end = html_start(line);
+    *index += 1;
+    if indented(line) {
+        while *index < lines.len() && (indented(lines[*index]) || lines[*index].trim().is_empty()) {
+            *index += 1;
+        }
+        while *index > start + 1 && lines[*index - 1].trim().is_empty() {
+            *index -= 1;
+        }
+    } else if let Some(closer) = end {
+        while !closer.is_empty()
+            && !lines[*index - 1].to_ascii_lowercase().contains(closer)
+            && *index < lines.len()
+        {
+            *index += 1;
+        }
+        if closer.is_empty() {
+            while *index < lines.len() && !lines[*index].is_empty() {
+                *index += 1;
+            }
+        }
+    } else {
+        while *index < lines.len() && indented(lines[*index]) {
+            *index += 1;
+        }
+    }
+    Kind::Literal(lines[start..*index].join("\n"))
+}
 fn parse_fence(
     lines: &[&str],
     index: &mut usize,
@@ -173,6 +254,9 @@ fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
     let mut items: Vec<ListItem> = Vec::new();
     let mut levels = Vec::new();
     while *index < lines.len() && !lines[*index].trim().is_empty() {
+        if is_rule(lines[*index]) {
+            break;
+        }
         if let Some((indent, ordered, content)) = list_marker(lines[*index]) {
             if lines[*index][..indent].contains('\t') {
                 return Err(error(*index + 1, "use spaces to indent lists"));
@@ -186,6 +270,12 @@ fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
             items.push(ListItem {
                 indent: (levels.len() - 1) * 2,
                 ordered,
+                start: lines[*index]
+                    .trim_start()
+                    .split('.')
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(1),
                 lines: vec![content.to_owned()],
             });
         } else {
@@ -195,7 +285,7 @@ fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
                 break;
             }
             if let Some(item) = items.last_mut() {
-                item.lines.push(lines[*index].trim().to_owned());
+                item.lines.push(lines[*index].trim_start().to_owned());
             }
         }
         *index += 1;
@@ -239,6 +329,9 @@ fn annotation_options(name: &str) -> Option<&'static [&'static str]> {
 
 pub(crate) fn starts_block(line: &str) -> bool {
     is_annotation(line)
+        || html_start(line).is_some()
+        || reference(line)
+        || setext(line)
         || fence(line).is_some()
         || heading(line).is_some()
         || is_rule(line)
@@ -257,11 +350,165 @@ fn heading(line: &str) -> Option<(usize, &str)> {
     heading_syntax(line).ok().map(|(_, heading)| heading)
 }
 
-fn is_rule(line: &str) -> bool {
-    fn rule(input: &str) -> IResult<&str, &str> {
-        all_consuming(preceded(whitespace, terminated(tag("---"), whitespace))).parse(input)
+fn indented(line: &str) -> bool {
+    line.starts_with("    ") || line.starts_with('\t')
+}
+
+fn setext(line: &str) -> bool {
+    !indented(line)
+        && !line.trim().is_empty()
+        && (line.trim().chars().all(|c| c == '=') || line.trim().chars().all(|c| c == '-'))
+}
+
+fn reference(line: &str) -> bool {
+    !indented(line) && line.trim_start().starts_with('[') && line.contains("]:")
+}
+
+const HTML_BLOCK_TAGS: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
+];
+
+fn html_block_tag(line: &str) -> bool {
+    let lower = line.trim_start().to_ascii_lowercase();
+    let tail = lower.trim_start_matches('<').trim_start_matches('/');
+    let name = tail
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .next()
+        .unwrap_or("");
+    HTML_BLOCK_TAGS.contains(&name)
+}
+
+fn html_start(line: &str) -> Option<&'static str> {
+    if indented(line) {
+        return None;
     }
-    rule(line).is_ok()
+    let lower = line.trim_start().to_ascii_lowercase();
+    let text = lower.as_str();
+    if text.starts_with("<!--") {
+        return Some("-->");
+    }
+    if text.starts_with("<?") {
+        return Some("?>");
+    }
+    if text.starts_with("<![CDATA[") {
+        return Some("]]>");
+    }
+    if text.starts_with("<!") {
+        return Some(">");
+    }
+    for (tag, closer) in [
+        ("script", "</script>"),
+        ("pre", "</pre>"),
+        ("style", "</style>"),
+        ("textarea", "</textarea>"),
+    ] {
+        if text
+            .strip_prefix(&format!("<{tag}"))
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with([' ', '\t', '>']))
+        {
+            return Some(closer);
+        }
+    }
+    if let Some(tail) = text.strip_prefix('<') {
+        let tail = tail.strip_prefix('/').unwrap_or(tail);
+        let name = tail
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .next()
+            .unwrap_or("");
+        if HTML_BLOCK_TAGS.contains(&name) && tail[name.len()..].starts_with([' ', '\t', '>', '/'])
+        {
+            return Some("");
+        }
+        if !name.is_empty()
+            && name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && text.ends_with('>')
+            && !text.contains("://")
+            && !text.contains('@')
+            && tail[name.len()..].starts_with([' ', '\t', '>', '/'])
+        {
+            return Some("");
+        }
+    }
+    None
+}
+
+fn table_at(lines: &[&str], index: usize) -> bool {
+    lines
+        .get(index + 1)
+        .is_some_and(|next| Table::separator(next))
+        && lines[index].contains('|')
+}
+
+fn is_rule(line: &str) -> bool {
+    if indented(line) {
+        return false;
+    }
+    let marks: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    marks.len() >= 3
+        && ['-', '*', '_']
+            .iter()
+            .any(|mark| marks.chars().all(|c| c == *mark))
 }
 
 fn quote(input: &str) -> IResult<&str, &str> {
@@ -317,7 +564,7 @@ fn list_syntax(input: &str) -> IResult<&str, (usize, bool, &str)> {
     ))
     .parse(input)?;
     let (input, content) = alt((eof, preceded(char(' '), rest))).parse(input)?;
-    Ok((input, (indentation.len(), ordered, content.trim())))
+    Ok((input, (indentation.len(), ordered, content.trim_start())))
 }
 
 fn list_marker(line: &str) -> Option<(usize, bool, &str)> {

@@ -45,6 +45,12 @@ impl Table {
         table_start(line.trim()).is_ok()
     }
 
+    pub(crate) fn separator(line: &str) -> bool {
+        let text = line.trim().trim_matches('|');
+        let cells = inline::cells(text, '|');
+        !cells.is_empty() && cells.iter().all(|cell| separator_cell(cell).is_ok())
+    }
+
     pub(crate) fn columns(&self) -> usize {
         self.rows.first().map_or(0, Vec::len)
     }
@@ -75,7 +81,17 @@ impl Table {
                 validate_border(text, start + offset)?;
                 continue;
             }
-            let (_, (delimiter, body)) = row(text).map_err(|_parse_error| {
+            let parsed = row(text).or_else(|err| {
+                if text.contains('|') && !text.starts_with(['│', '|']) {
+                    Ok((
+                        "",
+                        ('|', text.trim_start_matches('|').trim_end_matches('|')),
+                    ))
+                } else {
+                    Err(err)
+                }
+            });
+            let (_, (delimiter, body)) = parsed.map_err(|_parse_error| {
                 error(
                     start + offset,
                     "table rows must have opening and closing delimiters",

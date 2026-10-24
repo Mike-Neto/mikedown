@@ -46,18 +46,85 @@ pub(crate) fn fragments(text: &str, escapes: bool) -> impl Iterator<Item = Fragm
     })
 }
 
+fn balanced(text: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 0;
+    let mut escaped = false;
+    for (offset, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == open {
+            depth += 1;
+        }
+        if ch == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(offset + ch.len_utf8());
+            }
+        }
+    }
+    None
+}
+
+fn protected_len(text: &str) -> Option<usize> {
+    if text.starts_with('`') {
+        let count = text.bytes().take_while(|b| *b == b'`').count();
+        let mut offset = count;
+        while offset < text.len() {
+            if text[offset..].starts_with('`') {
+                let run = text[offset..].bytes().take_while(|b| *b == b'`').count();
+                if run == count {
+                    return Some(offset + run);
+                }
+                offset += run;
+            } else {
+                offset += text[offset..].chars().next()?.len_utf8();
+            }
+        }
+    }
+    let image = usize::from(text.starts_with("!["));
+    if text[image..].starts_with('[') {
+        let end = image + balanced(&text[image..], '[', ']')?;
+        if text[end..].starts_with('(') {
+            return Some(end + balanced(&text[end..], '(', ')')?);
+        }
+        if text[end..].starts_with('[') {
+            return Some(end + balanced(&text[end..], '[', ']')?);
+        }
+        return Some(end);
+    }
+    if text.starts_with('<') {
+        let end = text.find('>')?;
+        let body = &text[1..end];
+        if !body.chars().any(char::is_whitespace) && (body.contains(':') || body.contains('@')) {
+            return Some(end + 1);
+        }
+    }
+    None
+}
+
 pub(crate) fn tokens(text: &str) -> Vec<&str> {
     let mut tokens = Vec::new();
     let mut begin = 0;
     let mut offset = 0;
-    for fragment in fragments(text, false) {
-        if !fragment.protected && fragment.text.chars().all(char::is_whitespace) {
+    while offset < text.len() {
+        if let Some(length) = protected_len(&text[offset..]) {
+            offset += length;
+            continue;
+        }
+        let ch = text[offset..].chars().next().unwrap_or(' ');
+        if ch.is_whitespace() {
             if begin < offset {
                 tokens.push(&text[begin..offset]);
             }
-            begin = offset + fragment.text.len();
+            begin = offset + ch.len_utf8();
         }
-        offset += fragment.text.len();
+        offset += ch.len_utf8();
     }
     if begin < text.len() {
         tokens.push(&text[begin..]);
@@ -83,7 +150,7 @@ pub(crate) fn cells(text: &str, delimiter: char) -> Vec<String> {
 pub(crate) fn escape_delimiters(text: &str) -> String {
     let mut output = String::new();
     for fragment in fragments(text, true) {
-        if !fragment.protected && matches!(fragment.text, "|" | "│") {
+        if matches!(fragment.text, "|" | "│") {
             output.push('\\');
         }
         output.push_str(fragment.text);

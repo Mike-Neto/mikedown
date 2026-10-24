@@ -78,7 +78,7 @@ Option values:
 - `width`: positive integer display columns, or `off` to preserve physical prose
   line boundaries. Document default: `80`; blocks inherit the effective document
   width. Width is a target, not a hard maximum for indivisible content.
-- `table` / `style`: `unicode`, `ascii`, or `pipes`. Document default: `unicode`.
+- `table` / `style`: `unicode`, `ascii`, or `pipes`. Document default: `pipes`.
 - `start`: positive decimal integer up to 4294967295. Default: `1`. Applies to
   root ordered items; nested ordered lists start at one.
 - `align`: comma-separated `left`, `right`, or `center`, exactly one per column.
@@ -118,9 +118,8 @@ boundaries. Long words and URLs are not split. A local `width` replaces, rather
 than merely limits, the inherited width.
 
 Matching backtick runs protect inline-code spans, including their internal
-spacing. A run closes only a run of the same length. Unclosed inline backticks
-are preserved and protect text until the paragraph's end. Inline Markdown such
-as emphasis or links has no special display semantics and keeps its spelling.
+spacing. A run closes only a run of the same length. Unmatched backticks remain ordinary text. Complete links, images, reference
+links, autolinks, and code spans protect their internal whitespace and spelling.
 
 With `width=off`, physical paragraph, item, or quote line boundaries remain in
 place. Structural prefixes and surrounding whitespace still normalize.
@@ -134,14 +133,15 @@ For example, wrapping cannot move an inline `@ol` to the beginning of a line.
 
 Headings use one through six `#` characters followed by whitespace or end-of-line.
 The formatter retains the level and normalizes spacing to `# Heading`. Heading
-text is not wrapped. Underline-style headings are not special syntax in v0.1.
-A standalone `---` remains a horizontal rule.
+text is not wrapped. Setext headings retain their underline form, taking
+precedence over thematic breaks. Thematic breaks of three or more matching
+`-`, `*`, or `_` marks, optionally spaced, retain their spelling.
 
 ### Lists
 
 Bullets accept `-`, `*`, or `+`; numbered items accept decimal digits followed by
 `.`. A nonempty item has a space after its marker. A marker alone is an empty
-item. Existing ordered numbers are regenerated sequentially from one, or from an
+item. Existing ordered numbers are regenerated sequentially from each list's first number, or from an
 `@ol start=N` annotation. Bullet output always uses `-`.
 
 Indentation establishes nested levels; each deeper indentation starts a level,
@@ -171,13 +171,16 @@ by an information string. A closing fence uses the same character, at least as
 many repetitions, and no following non-whitespace text. Unclosed fences are
 errors. Fence lines and their enclosed content are preserved, including spaces
 and blank lines, except that newline encoding becomes LF. Annotations inside
-fences are literal text. Indented code blocks are not special syntax.
+fences are literal text. Top-level indented code is preserved; it cannot
+interrupt a paragraph. HTML blocks, comments, and reference definitions retain
+their internal whitespace. Directives in literal content remain literal.
 
 ## 4. Tables
 
 Input can be simple pipe rows, ASCII-bordered rows, or Unicode-bordered rows.
-Every row has outer `|` delimiters for pipes/ASCII, or `│` for Unicode. The first
-content row is the header. All content rows must contain the same number of cells;
+Legacy rows have outer `|` delimiters for pipes/ASCII, or `│` for Unicode.
+GFM tables with a header and separator may omit outer pipes. The first
+content row is the header. Normalized content rows must contain the same number of cells;
 empty cells are allowed. Adjacent table lines belong to one table; separate two
 tables with a blank line or annotation.
 
@@ -189,7 +192,7 @@ An all-separator row is reserved syntax and cannot be the first row.
 Outside inline code, a backslash escapes the next character for delimiter
 recognition and remains in the saved text. Use `\|` or `\│` for literal delimiters.
 Matching backtick runs also protect delimiters inside inline code. When converting
-styles, the formatter escapes any otherwise unprotected delimiter inside a cell.
+styles, the formatter escapes literal delimiters inside cells, including code spans.
 Cell text is preserved apart from trimming surrounding whitespace and introducing
 these necessary escapes. No content is truncated and no cells are wrapped.
 
@@ -305,7 +308,30 @@ coordination are outside v0.1.
 
 ## 7. Deferred capabilities
 
-Markdown compatibility guarantees, HTML/PDF output, rendering, includes, macros,
+Full CommonMark/GFM conformance, HTML/PDF output, rendering, includes, macros,
 project configuration files, generated contents lists, multi-paragraph list
 items, multi-line table cells, and editor plugins are outside this version.
 Plugin work and shared-core integration notes live in `TODO.md`.
+
+## Markdown preservation milestone
+
+The same grammar applies to `.mkd`, `.md`, and stdin. Selected core constructs
+follow [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/), with
+[GFM pipe tables](https://github.github.com/gfm/#tables-extension-).
+This is a preservation milestone, not a full conformance claim.
+
+A YAML front-matter opener `---` must be the first physical line. Preserve it
+through a `---` or `...` closer, or EOF when unclosed. YAML is never parsed or
+sorted. Front matter precedes an optional document directive.
+
+Trailing-space and backslash hard breaks survive wrapping in paragraphs,
+quotes, and existing list continuations. Each segment wraps independently;
+`width=off` preserves physical lines.
+
+Pipe tables are the default, including when input uses borders. Set document
+`table=unicode`/`table=ascii` or table `style=unicode`/`style=ascii` to retain
+bordered output. Inferred alignment stays in pipe separators; bordered output
+receives alignment metadata when needed for round trips. Irregular unannotated
+tables remain verbatim; explicit `@table` targets retain strict validation.
+Recursive quotes, multi-paragraph list items, code nested in lists, Obsidian
+syntax, and rendering remain deferred.

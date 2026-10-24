@@ -87,8 +87,8 @@ fn quote_paragraphs_and_empty_documents() {
 fn all_table_styles_have_golden_layouts() {
     let source = "| Name | Price |\n| Coffee | 3 |\n| Tea | 2 |\n";
     assert_eq!(
-        stable(source),
-        "┌────────┬───────┐\n│ Name   │ Price │\n├────────┼───────┤\n│ Coffee │ 3     │\n│ Tea    │ 2     │\n└────────┴───────┘\n"
+        stable(&format!("@table style=unicode\n{source}")),
+        "@table style=unicode\n┌────────┬───────┐\n│ Name   │ Price │\n├────────┼───────┤\n│ Coffee │ 3     │\n│ Tea    │ 2     │\n└────────┴───────┘\n"
     );
     assert_eq!(
         stable(&format!("@table style=ascii\n{source}")),
@@ -114,10 +114,10 @@ fn table_unicode_width_alignment_and_escapes_round_trip() {
     let output = stable("| h | v |\n| a\\|b | c│d |\n| `x|y` | ``a│`b`` |\n");
     assert!(output.contains("a\\|b"));
     assert!(output.contains("c\\│d"));
-    assert!(output.contains("`x|y`"));
-    assert!(output.contains("``a│`b``"));
+    assert!(output.contains("`x\\|y`"));
+    assert!(output.contains("``a\\│`b``"));
     let output = stable("| a | b | c |\n| :--- | ---: | :---: |\n| x | 12 | y |\n");
-    assert!(output.starts_with("@table align=left,right,center"));
+    assert!(!output.contains("@table"));
 }
 
 #[test]
@@ -149,13 +149,13 @@ fn widest_table_selection_is_stable_and_references_refresh() {
     let shrunk = output.replace("123456789012345", "x");
     let refreshed = stable(&shrunk);
     assert!(refreshed.contains("wrap=table:reserved"));
-    let first_wider = output.replace("│ 123456789 │", "│ 123456789012345678901234567890 │");
+    let first_wider = output.replace("| 123456789 |", "| 123456789012345678901234567890 |");
     assert!(stable(&first_wider).contains("wrap=table:reserved"));
     let tie = stable(
         "@document mikedown=0.1.0 width=8\n\n| a |\n| 123456789 |\n\n| b |\n| 123456789 |\n",
     );
     assert_eq!(tie.matches("id=table-1").count(), 1);
-    assert!(tie.find("id=table-1").unwrap() < tie.find("│ a").unwrap());
+    assert!(tie.find("id=table-1").unwrap() < tie.find("| a").unwrap());
 }
 
 #[test]
@@ -171,8 +171,8 @@ fn deleted_target_and_shrinking_tables_restore_minimum() {
     assert!(generated.contains("wrap=table:table-1"));
     let mut small = String::new();
     for line in generated.lines() {
-        if line.starts_with("│ 123") {
-            small.push_str("│ x │\n");
+        if line.starts_with("| 123") {
+            small.push_str("| x |\n");
         } else {
             small.push_str(line);
             small.push('\n');
@@ -209,8 +209,8 @@ fn malformed_documents_have_source_locations() {
         ("@ol\nparagraph", "incompatible target"),
         ("text\n\n@document", "before all blocks"),
         ("@document\n@document", "before all blocks"),
-        ("| a | b |\n| x |", "column count"),
-        ("| a", "closing delimiters"),
+        ("@table\n| a | b |\n| x |", "column count"),
+        ("@table\n| a", "closing delimiters"),
         ("@table align=right\n| a | b |", "one alignment"),
         (
             "@table id=x\n| a |\n\n@table id=x\n| b |",
@@ -438,13 +438,12 @@ fn parser_boundaries_preserve_prose_and_block_precedence() {
     }
     assert_eq!(stable("#\u{2003}Heading"), "# Heading\n");
     assert_eq!(stable(">\twords"), "> words\n");
-    assert_eq!(stable("*\n+\n12.\n"), "-\n-\n1.\n");
+    assert_eq!(stable("*\n+\n12.\n"), "-\n-\n12.\n");
     assert_eq!(
         stable("before\n# Heading\nafter"),
         "before\n\n# Heading\n\nafter\n"
     );
-    let errors = format("\t- item\n").unwrap_err();
-    assert_eq!(errors[0].to_string(), "1:1: use spaces to indent lists");
+    assert_eq!(stable("\t- item\n"), "\t- item\n");
 }
 
 #[test]
@@ -493,7 +492,7 @@ fn fences_require_matching_characters_lengths_and_clean_closers() {
 fn inline_runs_preserve_unmatched_spans_and_prose_backslashes() {
     assert_eq!(
         stable("@document mikedown=0.1.0 width=8\n\na `b  c\nd  e\n"),
-        "@document mikedown=0.1.0 width=8\n\na\n`b  c d  e\n"
+        "@document mikedown=0.1.0 width=8\n\na `b c d\ne\n"
     );
     assert_eq!(
         stable("@document mikedown=0.1.0 width=8\n\na \\`b  c` d\n"),
@@ -536,7 +535,7 @@ fn table_parsing_preserves_empty_cells_escapes_and_backtick_runs() {
             "table separator must follow the header",
         ),
     ] {
-        let diagnostic = format(source).unwrap_err().remove(0);
+        let diagnostic = format(&format!("@table\n{source}")).unwrap_err().remove(0);
         assert_eq!(diagnostic.message, message, "{source:?}");
         assert_eq!(diagnostic.column, 1);
     }
@@ -567,7 +566,7 @@ fn wide_tables_do_not_require_a_document_declaration() {
     assert!(!output.contains("@document"));
     assert!(!output.contains("wrap="));
     assert!(!output.contains("id="));
-    assert!(output.starts_with('┌'));
+    assert!(output.starts_with('|'));
 }
 
 #[test]
@@ -601,4 +600,98 @@ fn document_versions_have_source_located_validation() {
 fn version_declarations_inside_code_remain_literal() {
     let code = "```text\n@document mikedown=999.0.0\n```\n";
     assert_eq!(stable(code), code);
+}
+
+#[test]
+fn markdown_preservation_golden_fixtures() {
+    assert_eq!(
+        stable(include_str!("fixtures/front-matter.input.md")),
+        include_str!("fixtures/front-matter.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/html.input.md")),
+        include_str!("fixtures/html.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/references.input.md")),
+        include_str!("fixtures/references.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/indented.input.md")),
+        include_str!("fixtures/indented.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/links.input.md")),
+        include_str!("fixtures/links.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/hard-breaks.input.md")),
+        include_str!("fixtures/hard-breaks.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/setext.input.md")),
+        include_str!("fixtures/setext.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/rules.input.md")),
+        include_str!("fixtures/rules.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/list-starts.input.md")),
+        include_str!("fixtures/list-starts.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/pipe-tables.input.md")),
+        include_str!("fixtures/pipe-tables.expected.md")
+    );
+    assert_eq!(
+        stable(include_str!("fixtures/irregular-table.input.md")),
+        include_str!("fixtures/irregular-table.expected.md")
+    );
+}
+
+#[test]
+fn markdown_precedence_and_overrides() {
+    assert_eq!(
+        stable("---\nunclosed:  yaml\n@document width=bad\n"),
+        "---\nunclosed:  yaml\n@document width=bad\n"
+    );
+    assert_eq!(stable("\n---\n"), "---\n");
+    assert_eq!(stable("text\n    ```\n"), "text ```\n");
+    assert_eq!(
+        stable("@ol start=2\n7. first\n9. second\n"),
+        "@ol start=2\n2. first\n3. second\n"
+    );
+    let output = stable("@table style=unicode\n| h | v |\n| --- | ---: |\n| a | b |\n");
+    assert!(output.starts_with("@table align=left,right style=unicode"));
+}
+
+#[test]
+fn hard_break_segments_wrap_independently_and_width_off_keeps_markers() {
+    assert_eq!(
+        stable("@document width=8\n\none two three  \nfour five six\\\nseven eight\n"),
+        "@document width=8\n\none two\nthree  \nfour\nfive six\\\nseven\neight\n"
+    );
+    let source = "@paragraph width=off\none   two  \nthree\\\nfour\n";
+    assert_eq!(stable(source), source);
+}
+
+#[test]
+fn markdown_table_lookahead_preserves_content_and_strict_annotations() {
+    assert_eq!(stable("a | b\nprose follows\n"), "a | b prose follows\n");
+    for source in [
+        "| a | b\n| --- | ---\n| x | y\n",
+        "a | b |\n--- | --- |\nx | y |\n",
+        "| | b |\n| --- | --- |\n| | y |\n",
+    ] {
+        assert!(stable(source).contains("| --- | --- |"));
+    }
+    let source = include_str!("fixtures/irregular-table.input.md");
+    let diagnostic = format(&format!("@table\n{source}")).unwrap_err().remove(0);
+    assert_eq!(diagnostic.line, 4);
+    assert!(diagnostic.message.contains("column count"));
+    assert_eq!(
+        stable("text\n<span>\nmore   words\n"),
+        "text <span> more words\n"
+    );
 }
