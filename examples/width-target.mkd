@@ -1,4 +1,4 @@
-@document width=40 wrap=table:release-plan
+@document mikedown=0.1.0 width=40 wrap=table:release-plan
 
 # A table sets the width
 

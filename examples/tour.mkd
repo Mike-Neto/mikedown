@@ -1,4 +1,4 @@
-@document table=unicode width=80
+@document mikedown=0.1.0 table=unicode width=80
 
 # Mikedown
 

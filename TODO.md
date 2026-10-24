@@ -20,7 +20,7 @@ for later milestones, not features included in the binary today.
 
 - [ ] Build a Tree-sitter grammar for blocks and annotations, including all three
   table styles and literal code. Add highlighting, outlines, folding, and code
-  fence injections. Associate `.mike` with Mikedown.
+  fence injections. Associate `.mkd` with Mikedown.
 - [ ] Match only defined `@name` directives with whitespace/end-of-line name
   boundaries; leave mentions and unknown names as prose in both editor grammars.
 - [ ] Register a development extension and document using
@@ -37,9 +37,10 @@ Reference: https://zed.dev/docs/extensions/languages
 
 ## Obsidian plugin
 
-- [ ] Prototype a dedicated `.mike` text view and file registration. Check links,
+- [ ] Prototype a dedicated `.mkd` text view and file registration. Check links,
   file renames, search, and vault behavior rather than assuming Markdown views
-  will accept an independent language.
+  will accept an independent language. Also recognize `.md` files with a
+  supported `@document mikedown=VERSION` declaration.
 - [ ] Add CodeMirror 6 highlighting for blocks, annotations, and table IDs.
 - [ ] Compile the Rust formatting library to WASM with a small JavaScript binding
   for formatted text and diagnostics. Keep filesystem work outside the core.
@@ -52,7 +53,7 @@ Reference: https://zed.dev/docs/extensions/languages
 - [ ] Test desktop/mobile editing, sync conflicts, IME input, large documents,
   Unicode tables, ID/reference maintenance, and plugin unload/reload.
 - [ ] Document v0.1 restrictions and investigate Markdown-note interoperability
-  separately from native `.mike` files.
+  separately from native `.mkd` files.
 
 Reference: https://github.com/obsidianmd/obsidian-api
 

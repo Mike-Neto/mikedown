@@ -4,13 +4,44 @@
     reason = "The CLI owns stdout output and stderr diagnostics"
 )]
 
+mod cli_error;
+
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+
+use cli_error::CliError;
+
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const HELP: &str = "Mikedown — format plain-text documents\n\nUsage:\n  mikedown fmt [FILE|-]\n  mikedown fmt --write FILE...\n  mikedown fmt --check FILE...\n\nWithout a file, fmt reads stdin and writes stdout.\n--write validates every input before atomically replacing changed files.\n--check reports changes without writing (exit 1); errors exit 2.\nUse -- before filenames beginning with '-'.\n";
+#[derive(Parser)]
+#[command(name = "mikedown", version, about = "Format plain-text documents")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Format a file or stdin.
+    Fmt(FormatArgs),
+}
+
+#[derive(Args)]
+#[command(args_override_self = true)]
+struct FormatArgs {
+    /// Validate all inputs, then atomically replace changed files.
+    #[arg(long, conflicts_with = "check")]
+    write: bool,
+    /// Report changes without writing (exit 1); errors exit 2.
+    #[arg(long)]
+    check: bool,
+    /// Input paths; omit or use - for stdin in stdout mode.
+    #[arg(value_name = "FILE")]
+    paths: Vec<PathBuf>,
+}
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Mode {
@@ -29,75 +60,49 @@ struct Input {
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
-        Err(message) => {
-            eprintln!("mikedown: {message}");
+        Err(error) => {
+            eprintln!("mikedown: {error}");
             ExitCode::from(2)
         }
     }
 }
 
-fn arguments() -> Result<Option<(Mode, Vec<PathBuf>)>, String> {
-    let mut arguments = std::env::args_os().skip(1);
-    let Some(command) = arguments.next() else {
-        print!("{HELP}");
+fn arguments() -> Result<Option<(Mode, Vec<PathBuf>)>, CliError> {
+    let cli = Cli::parse();
+    let Some(Command::Fmt(arguments)) = cli.command else {
+        Cli::command().print_help().map_err(CliError::Stdout)?;
+        println!();
         return Ok(None);
     };
-    if command == "--help" || command == "-h" {
-        print!("{HELP}");
-        return Ok(None);
-    }
-    if command == "--version" || command == "-V" {
-        println!("mikedown {}", env!("CARGO_PKG_VERSION"));
-        return Ok(None);
-    }
-    if command != "fmt" {
-        return Err("expected 'fmt'; use --help for usage".into());
-    }
-    let mut mode = Mode::Stdout;
-    let mut paths = Vec::new();
-    let mut positional = false;
-    for argument in arguments {
-        if !positional && argument == "--" {
-            positional = true;
-            continue;
-        }
-        if !positional && (argument == "--help" || argument == "-h") {
-            print!("{HELP}");
-            return Ok(None);
-        }
-        if !positional && (argument == "--write" || argument == "--check") {
-            let requested = if argument == "--write" {
-                Mode::Write
-            } else {
-                Mode::Check
-            };
-            if mode != Mode::Stdout && mode != requested {
-                return Err("--write and --check are mutually exclusive".into());
-            }
-            mode = requested;
-        } else if !positional && argument != "-" && argument.to_string_lossy().starts_with('-') {
-            return Err(format!(
-                "unknown option '{}'; use -- before a filename beginning with '-'",
-                argument.to_string_lossy()
-            ));
-        } else {
-            paths.push(PathBuf::from(argument));
-        }
-    }
-    if mode == Mode::Stdout && paths.len() > 1 {
-        return Err("stdout mode accepts only one file".into());
-    }
-    if mode != Mode::Stdout && (paths.is_empty() || paths.iter().any(|p| p == Path::new("-"))) {
-        return Err("--write and --check require file paths, not stdin".into());
+    let mode = if arguments.write {
+        Mode::Write
+    } else if arguments.check {
+        Mode::Check
+    } else {
+        Mode::Stdout
+    };
+    let mut paths = arguments.paths;
+    let invalid = if mode == Mode::Stdout && paths.len() > 1 {
+        Some("stdout mode accepts only one file")
+    } else if mode != Mode::Stdout
+        && (paths.is_empty() || paths.iter().any(|p| p == Path::new("-")))
+    {
+        Some("--write and --check require file paths, not stdin")
+    } else {
+        None
+    };
+    if let Some(message) = invalid {
+        FormatArgs::augment_args(clap::Command::new("fmt").bin_name("mikedown fmt"))
+            .error(ErrorKind::ValueValidation, message)
+            .exit();
     }
     if paths.is_empty() {
         paths.push(PathBuf::from("-"));
     }
-
     Ok(Some((mode, paths)))
 }
 
-fn run() -> Result<u8, String> {
+fn run() -> Result<u8, CliError> {
     let Some((mode, paths)) = arguments()? else {
         return Ok(0);
     };
@@ -110,18 +115,18 @@ fn run() -> Result<u8, String> {
             Ok(input) => {
                 if mode == Mode::Write {
                     let canonical =
-                        fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                        fs::canonicalize(&path).map_err(|source| CliError::file(&path, source))?;
                     if !seen.insert(canonical) {
-                        return Err(format!("{}: duplicate input file", path.display()));
+                        return Err(CliError::DuplicateInput(path));
                     }
                 }
                 inputs.push(input);
             }
-            Err(message) => failures.push(message),
+            Err(error) => failures.push(error),
         }
     }
     if !failures.is_empty() {
-        return Err(failures.join("\n"));
+        return Err(CliError::Batch(failures));
     }
     match mode {
         Mode::Stdout => {
@@ -129,7 +134,7 @@ fn run() -> Result<u8, String> {
                 io::stdout()
                     .lock()
                     .write_all(input.formatted.as_bytes())
-                    .map_err(|e| e.to_string())?;
+                    .map_err(CliError::Stdout)?;
             }
             Ok(0)
         }
@@ -158,31 +163,24 @@ fn run() -> Result<u8, String> {
     }
 }
 
-fn read_input(path: &Path, mode: Mode) -> Result<Input, String> {
+fn read_input(path: &Path, mode: Mode) -> Result<Input, CliError> {
     let (original, permissions) = if path == Path::new("-") {
         let mut text = String::new();
         io::stdin()
             .read_to_string(&mut text)
-            .map_err(|e| format!("stdin: {e}"))?;
+            .map_err(CliError::Stdin)?;
         (text, None)
     } else {
-        let metadata =
-            fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let metadata = fs::symlink_metadata(path).map_err(|source| CliError::file(path, source))?;
         if mode == Mode::Write && (metadata.file_type().is_symlink() || !metadata.is_file()) {
-            return Err(format!(
-                "{}: --write requires a regular file, not a symlink",
-                path.display()
-            ));
+            return Err(CliError::InvalidWriteTarget(path.to_owned()));
         }
-        let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = fs::read_to_string(path).map_err(|source| CliError::file(path, source))?;
         (text, Some(metadata.permissions()))
     };
-    let formatted = mikedown::format(&original).map_err(|diagnostics| {
-        diagnostics
-            .iter()
-            .map(|diagnostic| format!("{}:{diagnostic}", path.display()))
-            .collect::<Vec<_>>()
-            .join("\n")
+    let formatted = mikedown::format(&original).map_err(|diagnostics| CliError::Format {
+        path: path.to_owned(),
+        diagnostics,
     })?;
     Ok(Input {
         path: path.to_owned(),
@@ -198,9 +196,9 @@ struct Replacement {
 }
 
 impl Replacement {
-    fn commit(&self) -> Result<(), String> {
+    fn commit(&self) -> Result<(), CliError> {
         fs::rename(&self.temporary, &self.destination)
-            .map_err(|e| format!("{}: {e}", self.destination.display()))?;
+            .map_err(|source| CliError::file(&self.destination, source))?;
         Ok(())
     }
 }
@@ -211,7 +209,7 @@ impl Drop for Replacement {
     }
 }
 
-fn stage(input: &Input) -> Result<Replacement, String> {
+fn stage(input: &Input) -> Result<Replacement, CliError> {
     let parent = input
         .path
         .parent()
@@ -236,27 +234,23 @@ fn stage(input: &Input) -> Result<Replacement, String> {
                 break;
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(format!("{}: {e}", input.path.display())),
+            Err(source) => return Err(CliError::file(&input.path, source)),
         }
     }
-    let (temporary, mut file) = opened.ok_or_else(|| {
-        format!(
-            "{}: could not allocate a temporary file",
-            input.path.display()
-        )
-    })?;
+    let (temporary, mut file) =
+        opened.ok_or_else(|| CliError::TemporaryFileExhausted(input.path.clone()))?;
     let replacement = Replacement {
         temporary,
         destination: input.path.clone(),
     };
     file.write_all(input.formatted.as_bytes())
-        .map_err(|e| format!("{}: {e}", input.path.display()))?;
+        .map_err(|source| CliError::file(&input.path, source))?;
     if let Some(permissions) = &input.permissions {
         file.set_permissions(permissions.clone())
-            .map_err(|e| format!("{}: {e}", input.path.display()))?;
+            .map_err(|source| CliError::file(&input.path, source))?;
     }
     file.sync_all()
-        .map_err(|e| format!("{}: {e}", input.path.display()))?;
+        .map_err(|source| CliError::file(&input.path, source))?;
     drop(file);
     Ok(replacement)
 }

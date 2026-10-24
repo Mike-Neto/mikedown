@@ -1,6 +1,13 @@
+use nom::branch::alt;
+use nom::bytes::complete::{tag, take_while, take_while_m_n};
+use nom::character::complete::{char, one_of};
+use nom::combinator::{all_consuming, map_res, recognize, rest, value, verify};
+use nom::multi::separated_list1;
+use nom::sequence::delimited;
+use nom::{IResult, Parser};
 use unicode_width::UnicodeWidthStr;
 
-use crate::{Diagnostic, error};
+use crate::{Diagnostic, error, inline};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Style {
@@ -11,12 +18,7 @@ pub(crate) enum Style {
 
 impl Style {
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "unicode" => Some(Self::Unicode),
-            "ascii" => Some(Self::Ascii),
-            "pipes" => Some(Self::Pipes),
-            _ => None,
-        }
+        style(value).ok().map(|(_, style)| style)
     }
 }
 
@@ -28,12 +30,8 @@ pub(crate) enum Alignment {
 }
 
 impl Alignment {
-    pub(crate) fn parse(value: &str) -> Self {
-        match value {
-            "right" => Self::Right,
-            "center" => Self::Center,
-            _ => Self::Left,
-        }
+    pub(crate) fn parse_list(value: &str) -> Option<Vec<Self>> {
+        alignment_list(value).ok().map(|(_, alignments)| alignments)
     }
 }
 
@@ -44,13 +42,7 @@ pub(crate) struct Table {
 
 impl Table {
     pub(crate) fn starts(line: &str) -> bool {
-        let text = line.trim();
-        text.starts_with('|')
-            || text.starts_with('│')
-            || text.starts_with('┌')
-            || text.starts_with('├')
-            || text.starts_with('└')
-            || ascii_border(text)
+        table_start(line.trim()).is_ok()
     }
 
     pub(crate) fn columns(&self) -> usize {
@@ -83,20 +75,15 @@ impl Table {
                 validate_border(text, start + offset)?;
                 continue;
             }
-            let delimiter = if text.starts_with('│') { '│' } else { '|' };
-            if !text.ends_with(delimiter) || text.len() <= delimiter.len_utf8() {
-                return Err(error(
+            let (_, (delimiter, body)) = row(text).map_err(|_parse_error| {
+                error(
                     start + offset,
                     "table rows must have opening and closing delimiters",
-                ));
-            }
-            let body = &text[delimiter.len_utf8()..text.len() - delimiter.len_utf8()];
-            let cells = split_cells(body, delimiter);
-            let separator = delimiter == '|'
-                && cells.iter().all(|cell| {
-                    let rule = cell.trim_matches(':');
-                    rule.len() >= 3 && rule.bytes().all(|ch| ch == b'-')
-                });
+                )
+            })?;
+            let cells = inline::cells(body, delimiter);
+            let separator =
+                delimiter == '|' && cells.iter().all(|cell| separator_cell(cell).is_ok());
             if let Some(previous) = rows.first()
                 && cells.len() != previous.len()
             {
@@ -126,7 +113,7 @@ impl Table {
                 rows.push(
                     cells
                         .into_iter()
-                        .map(|cell| escape_delimiters(&cell))
+                        .map(|cell| inline::escape_delimiters(&cell))
                         .collect(),
                 );
             }
@@ -227,104 +214,76 @@ impl Table {
     }
 }
 
+fn style(input: &str) -> IResult<&str, Style> {
+    all_consuming(alt((
+        value(Style::Unicode, tag("unicode")),
+        value(Style::Ascii, tag("ascii")),
+        value(Style::Pipes, tag("pipes")),
+    )))
+    .parse(input)
+}
+
+fn alignment_list(input: &str) -> IResult<&str, Vec<Alignment>> {
+    all_consuming(separated_list1(
+        char(','),
+        alt((
+            value(Alignment::Left, tag("left")),
+            value(Alignment::Right, tag("right")),
+            value(Alignment::Center, tag("center")),
+        )),
+    ))
+    .parse(input)
+}
+
+fn table_start(input: &str) -> IResult<&str, &str> {
+    alt((recognize(one_of("|│┌├└")), inline::ascii_rule)).parse(input)
+}
+
 fn ascii_border(text: &str) -> bool {
-    text.starts_with('+') && text.chars().all(|ch| ch == '+' || ch == '-') && text.contains('-')
+    inline::ascii_rule(text).is_ok()
+}
+
+fn row(input: &str) -> IResult<&str, (char, &str)> {
+    let (input, delimiter) = one_of("|│").parse(input)?;
+    let (input, body) =
+        map_res(rest, |body: &str| body.strip_suffix(delimiter).ok_or(())).parse(input)?;
+    Ok((input, (delimiter, body)))
+}
+
+fn separator_cell(input: &str) -> IResult<&str, &str> {
+    // Preserve the existing acceptance of repeated leading/trailing colons.
+    all_consuming(recognize(delimited(
+        take_while(|ch| ch == ':'),
+        take_while_m_n(3, usize::MAX, |ch| ch == '-'),
+        take_while(|ch| ch == ':'),
+    )))
+    .parse(input)
+}
+
+fn border(input: &str) -> IResult<&str, &str> {
+    all_consuming(alt((
+        verify(inline::ascii_rule, |text: &str| text.ends_with('+')),
+        recognize(delimited(
+            char('┌'),
+            take_while(|ch| ch == '─' || ch == '┬'),
+            char('┐'),
+        )),
+        recognize(delimited(
+            char('├'),
+            take_while(|ch| ch == '─' || ch == '┼'),
+            char('┤'),
+        )),
+        recognize(delimited(
+            char('└'),
+            take_while(|ch| ch == '─' || ch == '┴'),
+            char('┘'),
+        )),
+    )))
+    .parse(input)
 }
 
 fn validate_border(text: &str, line: usize) -> Result<(), Diagnostic> {
-    let valid = if text.starts_with('+') {
-        text.ends_with('+') && text.chars().all(|ch| ch == '+' || ch == '-')
-    } else {
-        let (right, middle) = match text.chars().next() {
-            Some('┌') => ('┐', '┬'),
-            Some('├') => ('┤', '┼'),
-            _ => ('┘', '┴'),
-        };
-        text.ends_with(right)
-            && text
-                .chars()
-                .skip(1)
-                .take(text.chars().count().saturating_sub(2))
-                .all(|ch| ch == '─' || ch == middle)
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(error(line, "malformed table border"))
-    }
-}
-
-// Preserve the original spelling of escapes and inline code. A backslash escapes
-// one scalar, and only matching backtick-run lengths terminate inline code.
-fn split_cells(text: &str, delimiter: char) -> Vec<String> {
-    let mut cells = Vec::new();
-    let mut begin = 0;
-    let mut escaped = false;
-    let mut code = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((index, ch)) = chars.next() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == '`' {
-            let mut count = 1;
-            while chars.peek().is_some_and(|(_, next)| *next == '`') {
-                chars.next();
-                count += 1;
-            }
-            if code == 0 {
-                code = count;
-            } else if code == count {
-                code = 0;
-            }
-        } else if ch == delimiter && code == 0 {
-            cells.push(text[begin..index].trim().to_owned());
-            begin = index + ch.len_utf8();
-        }
-    }
-    cells.push(text[begin..].trim().to_owned());
-    cells
-}
-
-fn escape_delimiters(text: &str) -> String {
-    let mut output = String::new();
-    let mut escaped = false;
-    let mut code = 0;
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if escaped {
-            output.push(ch);
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' {
-            output.push(ch);
-            escaped = true;
-            continue;
-        }
-        if ch == '`' {
-            let mut count = 1;
-            while chars.peek() == Some(&'`') {
-                chars.next();
-                count += 1;
-            }
-            output.push_str(&"`".repeat(count));
-            if code == 0 {
-                code = count;
-            } else if code == count {
-                code = 0;
-            }
-        } else {
-            if code == 0 && (ch == '|' || ch == '│') {
-                output.push('\\');
-            }
-            output.push(ch);
-        }
-    }
-    output
+    border(text)
+        .map(|_| ())
+        .map_err(|_parse_error| error(line, "malformed table border"))
 }

@@ -5,7 +5,8 @@ spacing, wrapping, and table borders into the file itself, so the result is
 readable in a terminal or any text editor. There is no preview or rendering step.
 
 Mikedown borrows familiar Markdown syntax but is an independent language. Its
-canonical files use `.mike`; the CLI accepts any filename.
+documents can use `.mkd` or `.md`; the CLI accepts either extension and any
+other filename. Both use the same Mikedown syntax and formatter.
 
 ## Try it
 
@@ -13,10 +14,11 @@ Requires Rust 1.96 or later.
 
 ```sh
 cargo build --release
-./target/release/mikedown fmt examples/tour.mike
-./target/release/mikedown fmt --write notes.mike
-./target/release/mikedown fmt --check notes.mike
-cat notes.mike | ./target/release/mikedown fmt
+./target/release/mikedown fmt examples/tour.mkd
+./target/release/mikedown fmt --write notes.mkd
+./target/release/mikedown fmt --check notes.mkd
+./target/release/mikedown fmt --write notes.md
+cat notes.mkd | ./target/release/mikedown fmt
 ```
 
 Install locally with `cargo install --path .`. For a checkout with dependencies
@@ -25,7 +27,7 @@ already cached, add `--offline` to Cargo commands.
 ## Write ordinary text, add instructions when needed
 
 ```text
-@document width=80 table=unicode
+@document mikedown=0.1.0 width=80 table=unicode
 
 # Morning routine
 
@@ -42,7 +44,7 @@ already cached, add `--offline` to Cargo commands.
 Formatting saves this:
 
 ```text
-@document table=unicode width=80
+@document mikedown=0.1.0 table=unicode width=80
 
 # Morning routine
 
@@ -59,6 +61,13 @@ Formatting saves this:
 └────────┴───────┘
 ```
 
+`@document` is optional. Add `@document mikedown=0.1.0` to declare the
+Mikedown version explicitly, or omit the annotation and use the defaults.
+Formatting preserves supplied declarations and does not add one automatically.
+The version option is optional even when `@document` configures other settings.
+Currently only `0.1.0` is supported; unsupported versions produce source-located
+errors and prevent writes. See [the `.md` example](examples/notes.md).
+
 Annotations configure the next block. Ordinary headings, lists, quotes, paragraphs,
 and tables also format without annotations. Select `style=ascii` or `style=pipes`
 on a table, use `align=left,right` for its columns, or set `width=off` on a prose
@@ -70,10 +79,11 @@ literal known directive, use `\@ol`; its backslash remains visible. The former
 `--- ol ---` notation is now ordinary prose, while `---` remains a horizontal rule.
 
 Prose wraps at 80 displayed columns by default. A wider table becomes the
-document's wrapping target: the formatter adds a table ID and a leading
-`wrap=table:ID` reference. Other prose then follows that table's measured width.
+document's wrapping target. When `@document` is present, the formatter saves a
+table ID and a `wrap=table:ID` reference. Without it, the formatter derives the
+width directly. Other prose follows that table's measured width.
 The widest table wins, and the configured width remains the minimum. See
-[the width-target example](examples/width-target.mike).
+[the width-target example](examples/width-target.mkd).
 
 Formatted output stays editable input. Change a cell directly inside a Unicode
 table and format again; borders and column padding are recalculated. A second

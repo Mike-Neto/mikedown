@@ -33,7 +33,7 @@ fn core_blocks_and_nested_lists() {
 #[test]
 fn lists_renumber_across_digit_boundaries_and_wrap_prefixes() {
     let output = stable(
-        "@document width=16\n\n@ol start=9\n- one two three four five six\n- seven eight nine ten eleven\n",
+        "@document mikedown=0.1.0 width=16\n\n@ol start=9\n- one two three four five six\n- seven eight nine ten eleven\n",
     );
     assert!(output.contains("9. one two three\n   four five six"));
     assert!(output.contains("10. seven eight\n    nine ten\n    eleven"));
@@ -47,14 +47,16 @@ fn lists_renumber_across_digit_boundaries_and_wrap_prefixes() {
 
 #[test]
 fn wrapping_uses_display_width_and_preserves_indivisible_tokens() {
-    let output = stable("@document width=10\n\n界界 界界 e\u{301} 👩‍💻 abc\n\nabcdefghijklmnop\n");
+    let output = stable(
+        "@document mikedown=0.1.0 width=10\n\n界界 界界 e\u{301} 👩‍💻 abc\n\nabcdefghijklmnop\n",
+    );
     assert!(output.contains("界界 界界\ne\u{301} 👩‍💻 abc"));
     assert!(output.contains("abcdefghijklmnop"));
 }
 
 #[test]
 fn inline_code_and_code_fences_are_preserved() {
-    let source = "@document width=12\n\nSome `code  with spaces` and ``a ` b`` end.\n\n````rust\n@unknown\n  untouched   spaces\n```\n````\n";
+    let source = "@document mikedown=0.1.0 width=12\n\nSome `code  with spaces` and ``a ` b`` end.\n\n````rust\n@unknown\n  untouched   spaces\n```\n````\n";
     let output = stable(source);
     assert!(output.contains("`code  with spaces`"));
     assert!(output.contains("``a ` b``"));
@@ -64,12 +66,14 @@ fn inline_code_and_code_fences_are_preserved() {
 #[test]
 fn width_off_and_local_overrides() {
     let output = stable(
-        "@document width=12\n\n@paragraph width=off\nthese lines are much longer than twelve\nkeep this line break\n\n@paragraph width=6\none two three four\n\n@quote width=off\n> keep these physical lines\n> too\n",
+        "@document mikedown=0.1.0 width=12\n\n@paragraph width=off\nthese lines are much longer than twelve\nkeep this line break\n\n@paragraph width=6\none two three four\n\n@quote width=off\n> keep these physical lines\n> too\n",
     );
     assert!(output.contains("these lines are much longer than twelve\nkeep this line break"));
     assert!(output.contains("one\ntwo\nthree\nfour"));
     assert!(output.contains("> keep these physical lines\n> too"));
-    stable("@document width=off\n\nfirst line\nsecond line\n\n| header |\n| a long cell value |\n");
+    stable(
+        "@document mikedown=0.1.0 width=off\n\nfirst line\nsecond line\n\n| header |\n| a long cell value |\n",
+    );
 }
 
 #[test]
@@ -103,7 +107,7 @@ fn table_unicode_width_alignment_and_escapes_round_trip() {
         let output = stable(&input.replace("align=", &format!("style={style} align=")));
         let lines: Vec<_> = output
             .lines()
-            .filter(|line| !line.starts_with('@'))
+            .filter(|line| !line.starts_with('@') && !line.is_empty())
             .collect();
         assert!(lines.iter().all(|line| line.width() == lines[0].width()));
     }
@@ -129,9 +133,9 @@ fn existing_formatted_tables_can_be_edited_and_reformatted() {
 
 #[test]
 fn tables_drive_document_width_and_local_settings_win() {
-    let input = "@document width=12\n\none two three four five six seven eight nine ten\n\n| heading |\n| 12345678901234567890 |\n\n@paragraph width=8\none two three four\n";
+    let input = "@document mikedown=0.1.0 width=12\n\none two three four five six seven eight nine ten\n\n| heading |\n| 12345678901234567890 |\n\n@paragraph width=8\none two three four\n";
     let output = stable(input);
-    assert!(output.starts_with("@document width=12 wrap=table:table-1"));
+    assert!(output.starts_with("@document mikedown=0.1.0 width=12 wrap=table:table-1"));
     assert!(output.contains("one two three four five\nsix seven eight nine ten"));
     assert!(output.contains("@table id=table-1"));
     assert!(output.contains("@paragraph width=8\none two\nthree\nfour"));
@@ -139,7 +143,7 @@ fn tables_drive_document_width_and_local_settings_win() {
 
 #[test]
 fn widest_table_selection_is_stable_and_references_refresh() {
-    let input = "@document width=8\n\n@table id=reserved\n| first |\n| 123456789 |\n\n@table id=chosen\n| second |\n| 123456789012345 |\n";
+    let input = "@document mikedown=0.1.0 width=8\n\n@table id=reserved\n| first |\n| 123456789 |\n\n@table id=chosen\n| second |\n| 123456789012345 |\n";
     let output = stable(input);
     assert!(output.contains("wrap=table:chosen"));
     let shrunk = output.replace("123456789012345", "x");
@@ -147,7 +151,9 @@ fn widest_table_selection_is_stable_and_references_refresh() {
     assert!(refreshed.contains("wrap=table:reserved"));
     let first_wider = output.replace("│ 123456789 │", "│ 123456789012345678901234567890 │");
     assert!(stable(&first_wider).contains("wrap=table:reserved"));
-    let tie = stable("@document width=8\n\n| a |\n| 123456789 |\n\n| b |\n| 123456789 |\n");
+    let tie = stable(
+        "@document mikedown=0.1.0 width=8\n\n| a |\n| 123456789 |\n\n| b |\n| 123456789 |\n",
+    );
     assert_eq!(tie.matches("id=table-1").count(), 1);
     assert!(tie.find("id=table-1").unwrap() < tie.find("│ a").unwrap());
 }
@@ -155,12 +161,12 @@ fn widest_table_selection_is_stable_and_references_refresh() {
 #[test]
 fn deleted_target_and_shrinking_tables_restore_minimum() {
     let output = stable(
-        "@document width=12 wrap=table:deleted\n\nplain words remain here\n\n| h |\n| x |\n",
+        "@document mikedown=0.1.0 width=12 wrap=table:deleted\n\nplain words remain here\n\n| h |\n| x |\n",
     );
     assert!(!output.contains("wrap="));
     assert!(output.contains("plain words\nremain here"));
     let generated = stable(
-        "| h |\n| 123456789012345678901234567890123456789012345678901234567890123456789012345678901234 |\n",
+        "@document\n\n| h |\n| 123456789012345678901234567890123456789012345678901234567890123456789012345678901234 |\n",
     );
     assert!(generated.contains("wrap=table:table-1"));
     let mut small = String::new();
@@ -173,14 +179,15 @@ fn deleted_target_and_shrinking_tables_restore_minimum() {
         }
     }
     assert!(!stable(&small).contains("wrap="));
-    let deleted = stable("@document wrap=table:table-1\n\nno tables remain\n");
+    let deleted = stable("@document mikedown=0.1.0 wrap=table:table-1\n\nno tables remain\n");
     assert!(!deleted.contains("wrap="));
 }
 
 #[test]
 fn automatic_ids_skip_existing_ids() {
-    let output =
-        stable("@document width=8\n\n@table id=table-1\n| x |\n\n| wide |\n| 123456789012345 |\n");
+    let output = stable(
+        "@document mikedown=0.1.0 width=8\n\n@table id=table-1\n| x |\n\n| wide |\n| 123456789012345 |\n",
+    );
     assert!(output.contains("wrap=table:table-2"));
     assert_eq!(output.matches("id=table-1").count(), 1);
     assert_eq!(output.matches("id=table-2").count(), 1);
@@ -192,7 +199,7 @@ fn malformed_documents_have_source_locations() {
         ("@ol start\n- item", "expected key=value"),
         ("@ol ---\n- item", "expected key=value"),
         ("@paragraph width=0\ntext", "invalid value"),
-        ("@document width=abc\ntext", "invalid value"),
+        ("@document mikedown=0.1.0 width=abc\ntext", "invalid value"),
         ("@table style=html\n| a |", "invalid value"),
         ("@table id=1bad\n| a |", "invalid value"),
         ("@ol color=red\n- a", "unsupported option"),
@@ -232,18 +239,20 @@ fn wrapping_never_introduces_new_blocks() {
         "#", "###", "-", "+", "*", ">", "---", "123.", "|cell|", "```x```", "~~~x",
     ] {
         stable(&format!(
-            "@document width=8\n\nhello world {token} word end more text\n"
+            "@document mikedown=0.1.0 width=8\n\nhello world {token} word end more text\n"
         ));
     }
-    stable("@document width=9\n\n- hello world - x more words # heading and |cell| end\n");
-    assert!(stable("\\@ol\ntext").starts_with("\\@ol"));
+    stable(
+        "@document mikedown=0.1.0 width=9\n\n- hello world - x more words # heading and |cell| end\n",
+    );
+    assert!(stable("\\@ol\ntext").ends_with("\\@ol text\n"));
 }
 
 #[test]
 fn line_endings_are_canonical_and_annotations_sort_options() {
     assert_eq!(
-        stable("@document width=80 table=pipes\r\n\r\n#  Hi\r\n"),
-        "@document table=pipes width=80\n\n# Hi\n"
+        stable("@document mikedown=0.1.0 width=80 table=pipes\r\n\r\n#  Hi\r\n"),
+        "@document mikedown=0.1.0 table=pipes width=80\n\n# Hi\n"
     );
 }
 
@@ -280,7 +289,7 @@ fn varied_documents_remain_valid_and_idempotent_after_formatting() {
     ];
     let mut random: u64 = 123_456;
     for _ in 0..1500 {
-        let mut source = String::from("@document width=12\n\n");
+        let mut source = String::from("@document mikedown=0.1.0 width=12\n\n");
         for _ in 0..30 {
             random = random
                 .wrapping_mul(6_364_136_223_846_793_005)
@@ -299,8 +308,8 @@ fn varied_documents_remain_valid_and_idempotent_after_formatting() {
 
 #[test]
 fn complete_document_fixture() {
-    let input = include_str!("fixtures/document.input.mike");
-    let expected = include_str!("fixtures/document.expected.mike");
+    let input = include_str!("fixtures/document.input.mkd");
+    let expected = include_str!("fixtures/document.expected.mkd");
     assert_eq!(stable(input), expected);
 }
 
@@ -317,9 +326,9 @@ fn empty_list_items_round_trip() {
 
 #[test]
 fn directives_need_no_closing_delimiter_and_keep_their_scope() {
-    let source = "  @document width=24\n\n  @paragraph width=off\nthis physical line remains longer than twenty-four\nnext line\n\n@quote width=off\n> quoted first line\n> quoted second line\n\n@ol\n\n- first\n- second\n\n@ul\n1. first\n2. second\n\n@table style=pipes\n| a |\n| b |\n";
+    let source = "  @document mikedown=0.1.0 width=24\n\n  @paragraph width=off\nthis physical line remains longer than twenty-four\nnext line\n\n@quote width=off\n> quoted first line\n> quoted second line\n\n@ol\n\n- first\n- second\n\n@ul\n1. first\n2. second\n\n@table style=pipes\n| a |\n| b |\n";
     let output = stable(source);
-    assert!(output.starts_with("@document width=24\n\n@paragraph width=off\n"));
+    assert!(output.starts_with("@document mikedown=0.1.0 width=24\n\n@paragraph width=off\n"));
     assert!(output.contains("twenty-four\nnext line"));
     assert!(output.contains("@quote width=off\n> quoted first line\n> quoted second line"));
     assert!(output.contains("@ol\n1. first\n2. second"));
@@ -361,7 +370,8 @@ fn inline_directives_and_escaped_directives_remain_text() {
         let escaped = format!("\\{directive} width=80\n");
         assert_eq!(stable(&escaped), escaped);
     }
-    let code = "```text\n@document invalid\n@ol\n@table style=invalid\n--- ol ---\n```\n";
+    let code =
+        "```text\n@document mikedown=0.1.0 invalid\n@ol\n@table style=invalid\n--- ol ---\n```\n";
     assert_eq!(stable(code), code);
 }
 
@@ -369,12 +379,13 @@ fn inline_directives_and_escaped_directives_remain_text() {
 fn directive_names_cannot_be_activated_by_wrapping() {
     for directive in ["@document", "@paragraph", "@quote", "@ol", "@ul", "@table"] {
         for prefix in ["", "- ", "> "] {
-            let source = format!("@document width=8\n\n{prefix}hello {directive} word\n");
+            let source =
+                format!("@document mikedown=0.1.0 width=8\n\n{prefix}hello {directive} word\n");
             let output = stable(&source);
             assert!(output.contains(&format!("hello {directive}")));
         }
     }
-    let output = stable("@document width=8\n\nhello @miguel word\n");
+    let output = stable("@document mikedown=0.1.0 width=8\n\nhello @miguel word\n");
     assert!(output.contains("hello\n@miguel\nword"));
 }
 
@@ -386,8 +397,8 @@ fn old_annotation_notation_is_prose_and_rules_remain_rules() {
     let output = stable(table);
     assert!(output.contains("| --- |"));
     assert_eq!(
-        stable("@document width=8\n\n--- ol ---\n"),
-        "@document width=8\n\n--- ol ---\n"
+        stable("@document mikedown=0.1.0 width=8\n\n--- ol ---\n"),
+        "@document mikedown=0.1.0 width=8\n\n--- ol ---\n"
     );
 }
 
@@ -409,4 +420,185 @@ fn directive_options_have_accurate_source_coordinates() {
         stable("@paragraph\twidth=off\nfirst\nsecond\n"),
         "@paragraph width=off\nfirst\nsecond\n"
     );
+}
+
+#[test]
+fn parser_boundaries_preserve_prose_and_block_precedence() {
+    for text in [
+        "####### text",
+        "#text",
+        "-\titem",
+        "1.\titem",
+        ">text",
+        ">\u{2003}text",
+    ] {
+        // These resemble structural markers but do not satisfy their boundaries.
+        let expected = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(stable(text), format!("{expected}\n"));
+    }
+    assert_eq!(stable("#\u{2003}Heading"), "# Heading\n");
+    assert_eq!(stable(">\twords"), "> words\n");
+    assert_eq!(stable("*\n+\n12.\n"), "-\n-\n1.\n");
+    assert_eq!(
+        stable("before\n# Heading\nafter"),
+        "before\n\n# Heading\n\nafter\n"
+    );
+    let errors = format("\t- item\n").unwrap_err();
+    assert_eq!(errors[0].to_string(), "1:1: use spaces to indent lists");
+}
+
+#[test]
+fn unicode_annotation_spacing_keeps_scalar_columns() {
+    assert_eq!(
+        stable("\u{2003}@paragraph\u{a0}width=off\u{2003}\nfirst\nsecond\n"),
+        "@paragraph width=off\nfirst\nsecond\n"
+    );
+    for (source, column, message) in [
+        (
+            "\u{2003}@paragraph\u{a0}width=invalid\ntext",
+            13,
+            "invalid value 'invalid' for width",
+        ),
+        ("@table\u{2003}id=é\n| h |", 8, "invalid value 'é' for id"),
+        (
+            "@table\u{2003}id=ok\u{a0}id=other\n| h |",
+            14,
+            "duplicate option 'id'",
+        ),
+        ("@paragraph width=\ntext", 12, "invalid value '' for width"),
+        (
+            "@paragraph width=2=3\ntext",
+            12,
+            "invalid value '2=3' for width",
+        ),
+    ] {
+        let diagnostic = format(source).unwrap_err().remove(0);
+        assert_eq!(diagnostic.line, 1, "{source:?}");
+        assert_eq!(diagnostic.column, column, "{source:?}");
+        assert_eq!(diagnostic.message, message, "{source:?}");
+    }
+}
+
+#[test]
+fn fences_require_matching_characters_lengths_and_clean_closers() {
+    let source = "````text\n```\n~~~~\n```` trailing\n@ol\n`````\n";
+    assert_eq!(stable(source), source);
+    for source in ["```", "~~~~\n~~~", "````\n```", "```\n~~~", "```\n```text"] {
+        let diagnostic = format(source).unwrap_err().remove(0);
+        assert_eq!(diagnostic.to_string(), "1:1: unclosed code fence");
+    }
+}
+
+#[test]
+fn inline_runs_preserve_unmatched_spans_and_prose_backslashes() {
+    assert_eq!(
+        stable("@document mikedown=0.1.0 width=8\n\na `b  c\nd  e\n"),
+        "@document mikedown=0.1.0 width=8\n\na\n`b  c d  e\n"
+    );
+    assert_eq!(
+        stable("@document mikedown=0.1.0 width=8\n\na \\`b  c` d\n"),
+        "@document mikedown=0.1.0 width=8\n\na\n\\`b  c`\nd\n"
+    );
+    assert_eq!(
+        stable("@document mikedown=0.1.0 width=8\n\na ``b ` c`` d\n"),
+        "@document mikedown=0.1.0 width=8\n\na\n``b ` c``\nd\n"
+    );
+}
+
+#[test]
+fn table_parsing_preserves_empty_cells_escapes_and_backtick_runs() {
+    for row in [
+        "| | |",
+        "| \\| | \\│ |",
+        "| \\界 | trailing\\ |",
+        "| ``a ` | b`` | c |",
+        "| `a\\`|b` | c |",
+        "| a | `unclosed | still one cell |",
+        "│ a|b │ `x│y` │",
+    ] {
+        let source = format!("@table style=pipes\n{row}\n");
+        let output = stable(&source);
+        assert!(output.contains("| ---"), "{row:?}: {output}");
+    }
+    for (source, message) in [
+        ("|", "table rows must have opening and closing delimiters"),
+        ("│", "table rows must have opening and closing delimiters"),
+        (
+            "│ a |",
+            "table rows must have opening and closing delimiters",
+        ),
+        ("┌──┤\n│ a │", "malformed table border"),
+        ("+---\n| a |", "malformed table border"),
+        ("┌─┐", "table has no header row"),
+        ("| --- |", "table separator must follow the header"),
+        (
+            "| a |\n| --- |\n| --- |",
+            "table separator must follow the header",
+        ),
+    ] {
+        let diagnostic = format(source).unwrap_err().remove(0);
+        assert_eq!(diagnostic.message, message, "{source:?}");
+        assert_eq!(diagnostic.column, 1);
+    }
+}
+
+#[test]
+fn document_and_version_declarations_are_optional() {
+    assert_eq!(stable("#    Notes\n"), "# Notes\n");
+    assert_eq!(stable("@document\n\n# Notes\n"), "@document\n\n# Notes\n");
+    assert_eq!(
+        stable("@document mikedown=0.1.0\n\n# Notes\n"),
+        "@document mikedown=0.1.0\n\n# Notes\n"
+    );
+    assert_eq!(
+        stable("@document width=12 table=pipes\n\none two three four\n"),
+        "@document table=pipes width=12\n\none two\nthree four\n"
+    );
+    assert_eq!(stable("@document"), "@document\n");
+    for source in ["", "\n\n", " \t\r\n"] {
+        assert_eq!(stable(source), "");
+    }
+}
+
+#[test]
+fn wide_tables_do_not_require_a_document_declaration() {
+    let source = "| header |\n| 123456789012345678901234567890123456789012345678901234567890123456789012345678901234 |\n";
+    let output = stable(source);
+    assert!(!output.contains("@document"));
+    assert!(!output.contains("wrap="));
+    assert!(!output.contains("id="));
+    assert!(output.starts_with('┌'));
+}
+
+#[test]
+fn document_versions_have_source_located_validation() {
+    for version in ["", "0.2.0", "1.0.0", "0.1", "v0.1.0", "0.1.0-extra"] {
+        let diagnostic = format(&format!("\n  @document mikedown={version}\n\n# Notes\n"))
+            .unwrap_err()
+            .remove(0);
+        assert_eq!(diagnostic.line, 2);
+        assert_eq!(diagnostic.column, 13);
+        assert_eq!(
+            diagnostic.message,
+            format!("unsupported Mikedown version '{version}'; supported version is 0.1.0")
+        );
+    }
+    let diagnostic = format("@document mikedown=0.1.0 mikedown=0.1.0\ntext")
+        .unwrap_err()
+        .remove(0);
+    assert_eq!(diagnostic.column, 26);
+    assert_eq!(diagnostic.message, "duplicate option 'mikedown'");
+    let diagnostic = format("@paragraph mikedown=0.1.0\ntext")
+        .unwrap_err()
+        .remove(0);
+    assert_eq!(
+        diagnostic.message,
+        "unsupported option 'mikedown' for paragraph"
+    );
+}
+
+#[test]
+fn version_declarations_inside_code_remain_literal() {
+    let code = "```text\n@document mikedown=999.0.0\n```\n";
+    assert_eq!(stable(code), code);
 }

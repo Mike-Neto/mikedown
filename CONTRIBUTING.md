@@ -5,13 +5,20 @@ submitting changes. With cached dependencies, Cargo commands support `--offline`
 
 ## Architecture
 
-- `src/parser.rs`: source-located block and annotation parsing, including literal
-  code protection. Parsing never mutates files.
-- `src/table.rs`: table input, alignment, escaping, and all three text layouts.
+- `src/parser.rs`: nom recognizers for source-located blocks and annotations,
+  with explicit state for annotation scope and list nesting. Complete-input
+  parsers preserve language diagnostics; parsing never mutates files.
+- `src/inline.rs`: shared nom recognition of backtick runs and table escapes,
+  used by prose tokenization, table cells, and delimiter escaping.
+- `src/table.rs`: nom table input and border recognition, alignment validation,
+  and all three text layouts.
 - `src/lib.rs`: document defaults, table measurement/reference maintenance, prose
   wrapping, and canonical emission. This is the shared core for future plugins.
-- `src/main.rs`: argument handling, UTF-8 I/O, batch validation, staged atomic
-  replacement, and exit codes. No language rules belong here.
+- `src/main.rs`: clap derive argument handling, UTF-8 I/O, batch validation,
+  staged atomic replacement, and exit codes. No language rules belong here.
+- `src/cli_error.rs`: typed runtime failures derived with thiserror. Preserve I/O
+  sources, file paths, diagnostics, and individual batch errors until rendering.
+  Library `Diagnostic` also derives thiserror while retaining its public fields.
 
 Spec changes need an example and a regression test. For every new construct,
 verify that formatted text can be edited and parsed again. In particular,

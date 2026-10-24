@@ -1,6 +1,14 @@
 use std::collections::BTreeMap;
 
-use crate::table::{Style, Table};
+use nom::branch::alt;
+use nom::bytes::complete::{tag, take_while, take_while_m_n, take_while1};
+use nom::character::complete::{char, digit1, one_of, satisfy};
+use nom::combinator::{all_consuming, eof, map_res, peek, recognize, rest, value, verify};
+use nom::multi::many0;
+use nom::sequence::{preceded, terminated};
+use nom::{IResult, Offset, Parser};
+
+use crate::table::{Alignment, Style, Table};
 use crate::{Annotation, Diagnostic, error};
 
 pub(crate) struct Document {
@@ -104,17 +112,14 @@ fn parse_block(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
         *index += 1;
         return Ok(Kind::Heading(level, text.to_owned()));
     }
-    if line.trim() == "---" {
+    if is_rule(line) {
         *index += 1;
         return Ok(Kind::Literal("---".into()));
     }
     if is_quote(line) {
         let mut body = Vec::new();
         while *index < lines.len() && is_quote(lines[*index]) {
-            let content = lines[*index]
-                .trim_start()
-                .strip_prefix('>')
-                .unwrap_or_default();
+            let content = quote(lines[*index]).map_or("", |(_, content)| content);
             body.push(
                 content
                     .strip_prefix(' ')
@@ -155,13 +160,9 @@ fn parse_fence(
     let start = *index;
     *index += 1;
     while *index < lines.len() {
-        let closing = lines[*index].trim_start();
-        if closing.starts_with(character) {
-            let length = closing.chars().take_while(|c| *c == character).count();
-            if length >= count && closing[length..].trim().is_empty() {
-                *index += 1;
-                return Ok(Kind::Literal(lines[start..*index].join("\n")));
-            }
+        if closing_fence(lines[*index], character, count).is_ok() {
+            *index += 1;
+            return Ok(Kind::Literal(lines[start..*index].join("\n")));
         }
         *index += 1;
     }
@@ -202,16 +203,33 @@ fn parse_list(lines: &[&str], index: &mut usize) -> Result<Kind, Diagnostic> {
     Ok(Kind::List(items))
 }
 
+// Match the existing Unicode whitespace behavior rather than nom's ASCII space0.
+fn whitespace(input: &str) -> IResult<&str, &str> {
+    take_while(char::is_whitespace).parse(input)
+}
+
+fn token(input: &str) -> IResult<&str, &str> {
+    take_while1(|ch: char| !ch.is_whitespace()).parse(input)
+}
+
+fn annotation_name(input: &str) -> IResult<&str, &str> {
+    preceded(
+        whitespace,
+        preceded(
+            char('@'),
+            verify(token, |name: &str| annotation_options(name).is_some()),
+        ),
+    )
+    .parse(input)
+}
+
 pub(crate) fn is_annotation(line: &str) -> bool {
-    line.trim_start()
-        .strip_prefix('@')
-        .and_then(|body| body.split(char::is_whitespace).next())
-        .is_some_and(|name| annotation_options(name).is_some())
+    annotation_name(line).is_ok()
 }
 
 fn annotation_options(name: &str) -> Option<&'static [&'static str]> {
     match name {
-        "document" => Some(&["width", "table", "wrap"]),
+        "document" => Some(&["mikedown", "width", "table", "wrap"]),
         "ol" => Some(&["width", "start"]),
         "ul" | "paragraph" | "quote" => Some(&["width"]),
         "table" => Some(&["style", "id", "align"]),
@@ -219,101 +237,140 @@ fn annotation_options(name: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-fn starts_block(line: &str) -> bool {
+pub(crate) fn starts_block(line: &str) -> bool {
     is_annotation(line)
         || fence(line).is_some()
         || heading(line).is_some()
-        || line.trim() == "---"
+        || is_rule(line)
         || is_quote(line)
         || list_marker(line).is_some()
         || Table::starts(line)
 }
 
+fn heading_syntax(input: &str) -> IResult<&str, (usize, &str)> {
+    let (input, marks) = preceded(whitespace, take_while_m_n(1, 6, |ch| ch == '#')).parse(input)?;
+    let (input, _) = peek(alt((recognize(satisfy(char::is_whitespace)), eof))).parse(input)?;
+    Ok(("", (marks.len(), input.trim())))
+}
+
 fn heading(line: &str) -> Option<(usize, &str)> {
-    let line = line.trim_start();
-    let count = line.bytes().take_while(|ch| *ch == b'#').count();
-    ((1..=6).contains(&count) && line[count..].chars().next().is_none_or(char::is_whitespace))
-        .then(|| (count, line[count..].trim()))
+    heading_syntax(line).ok().map(|(_, heading)| heading)
+}
+
+fn is_rule(line: &str) -> bool {
+    fn rule(input: &str) -> IResult<&str, &str> {
+        all_consuming(preceded(whitespace, terminated(tag("---"), whitespace))).parse(input)
+    }
+    rule(line).is_ok()
+}
+
+fn quote(input: &str) -> IResult<&str, &str> {
+    preceded(
+        whitespace,
+        preceded(
+            char('>'),
+            preceded(peek(alt((tag(" "), tag("\t"), eof))), rest),
+        ),
+    )
+    .parse(input)
 }
 
 fn is_quote(line: &str) -> bool {
-    let line = line.trim_start();
-    line == ">" || line.starts_with("> ") || line.starts_with(">\t")
+    quote(line).is_ok()
+}
+
+fn fence_syntax(input: &str) -> IResult<&str, (char, usize)> {
+    let (input, character) = peek(preceded(whitespace, one_of("`~"))).parse(input)?;
+    let (input, marks) = preceded(
+        whitespace,
+        verify(take_while1(|ch| ch == character), |marks: &str| {
+            marks.len() >= 3
+        }),
+    )
+    .parse(input)?;
+    let count = marks.len();
+    Ok((input, (character, count)))
 }
 
 fn fence(line: &str) -> Option<(char, usize)> {
-    let line = line.trim_start();
-    let character = line.chars().next()?;
-    if character != '`' && character != '~' {
-        return None;
-    }
-    let count = line.chars().take_while(|ch| *ch == character).count();
-    (count >= 3).then_some((character, count))
+    fence_syntax(line).ok().map(|(_, fence)| fence)
+}
+
+fn closing_fence(input: &str, character: char, count: usize) -> IResult<&str, &str> {
+    all_consuming(preceded(
+        whitespace,
+        terminated(
+            verify(take_while1(|ch| ch == character), |marks: &str| {
+                marks.len() >= count
+            }),
+            whitespace,
+        ),
+    ))
+    .parse(input)
+}
+
+fn list_syntax(input: &str) -> IResult<&str, (usize, bool, &str)> {
+    let (input, indentation) = whitespace(input)?;
+    let (input, ordered) = alt((
+        value(false, one_of("-*+")),
+        value(true, (digit1, char('.'))),
+    ))
+    .parse(input)?;
+    let (input, content) = alt((eof, preceded(char(' '), rest))).parse(input)?;
+    Ok((input, (indentation.len(), ordered, content.trim())))
 }
 
 fn list_marker(line: &str) -> Option<(usize, bool, &str)> {
-    let body = line.trim_start();
-    let indent = line.len() - body.len();
-    if matches!(body, "-" | "*" | "+") {
-        return Some((indent, false, ""));
-    }
-    if let Some(content) = body
-        .strip_prefix("- ")
-        .or_else(|| body.strip_prefix("* "))
-        .or_else(|| body.strip_prefix("+ "))
-    {
-        return Some((indent, false, content.trim()));
-    }
-    let digits = body.bytes().take_while(u8::is_ascii_digit).count();
-    if digits > 0 && &body[digits..] == "." {
-        return Some((indent, true, ""));
-    }
-    if digits > 0
-        && let Some(content) = body[digits..].strip_prefix(". ")
-    {
-        return Some((indent, true, content.trim()));
-    }
-    None
+    list_syntax(line).ok().map(|(_, marker)| marker)
+}
+
+fn option_pair(input: &str) -> IResult<&str, (&str, &str)> {
+    let (input, key) = terminated(take_while(|ch| ch != '='), char('=')).parse(input)?;
+    let (input, value) = rest(input)?;
+    Ok((input, (key, value)))
+}
+
+fn annotation_tokens(input: &str) -> IResult<&str, Vec<&str>> {
+    all_consuming(terminated(many0(preceded(whitespace, token)), whitespace)).parse(input)
 }
 
 fn parse_annotation(line: &str, number: usize) -> Result<Annotation, Diagnostic> {
-    let text = line.trim();
-    let body = text.strip_prefix('@').unwrap_or_default();
-    let mut tokens = body.split_whitespace();
-    let name = tokens
-        .next()
-        .ok_or_else(|| error(number, "missing annotation name"))?;
+    let (remaining, name) =
+        annotation_name(line).map_err(|_parse_error| error(number, "missing annotation name"))?;
     let allowed = annotation_options(name)
         .ok_or_else(|| error(number, format!("unknown annotation '{name}'")))?;
+    let (_, tokens) = annotation_tokens(remaining)
+        .map_err(|_parse_error| error(number, "invalid annotation options"))?;
     let mut options = BTreeMap::new();
-    let mut cursor = line.len() - line.trim_start().len() + 1 + name.len();
     for token in tokens {
-        let start = cursor + line[cursor..].find(token).unwrap_or(0);
-        let column = line[..start].chars().count() + 1;
-        cursor = start + token.len();
+        let column = line[..line.offset(token)].chars().count() + 1;
         let failure = |message: String| Diagnostic {
             line: number,
             column,
             message,
         };
-        let (key, value) = token
-            .split_once('=')
-            .ok_or_else(|| failure(format!("expected key=value, found '{token}'")))?;
+        let (_, (key, value)) = option_pair(token)
+            .map_err(|_parse_error| failure(format!("expected key=value, found '{token}'")))?;
         if !allowed.contains(&key) {
             return Err(failure(format!("unsupported option '{key}' for {name}")));
         }
         if options.contains_key(key) {
             return Err(failure(format!("duplicate option '{key}'")));
         }
+        if key == "mikedown" && value != crate::DOCUMENT_VERSION {
+            return Err(failure(format!(
+                "unsupported Mikedown version '{value}'; supported version is {}",
+                crate::DOCUMENT_VERSION,
+            )));
+        }
         let valid = match key {
+            "mikedown" => true,
             "width" => value == "off" || positive_number(value),
             "start" => positive_number(value) && value.parse::<u32>().is_ok(),
             "table" | "style" => Style::parse(value).is_some(),
             "id" => valid_id(value),
-            "wrap" => value.strip_prefix("table:").is_some_and(valid_id),
-            "align" => value
-                .split(',')
-                .all(|v| matches!(v, "left" | "right" | "center")),
+            "wrap" => wrap_reference(value).is_ok(),
+            "align" => Alignment::parse_list(value).is_some(),
             _ => false,
         };
         if !valid {
@@ -328,18 +385,29 @@ fn parse_annotation(line: &str, number: usize) -> Result<Annotation, Diagnostic>
     })
 }
 
+fn number(input: &str) -> IResult<&str, usize> {
+    all_consuming(verify(map_res(digit1, str::parse::<usize>), |number| {
+        *number > 0
+    }))
+    .parse(input)
+}
+
 fn positive_number(value: &str) -> bool {
-    !value.is_empty()
-        && value.bytes().all(|b| b.is_ascii_digit())
-        && value.parse::<usize>().is_ok_and(|n| n > 0)
+    number(value).is_ok()
+}
+
+fn identifier(input: &str) -> IResult<&str, &str> {
+    recognize((
+        satisfy(|ch| ch.is_ascii_alphabetic()),
+        take_while(|ch: char| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'),
+    ))
+    .parse(input)
 }
 
 fn valid_id(value: &str) -> bool {
-    value
-        .bytes()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphabetic())
-        && value
-            .bytes()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
+    all_consuming(identifier).parse(value).is_ok()
+}
+
+fn wrap_reference(input: &str) -> IResult<&str, &str> {
+    all_consuming(preceded(tag("table:"), identifier)).parse(input)
 }

@@ -5,8 +5,12 @@ Version: **0.1**. Status: implemented experimental language.
 ## 1. Model and canonical form
 
 A document is UTF-8 text containing an optional document annotation and a sequence
-of blocks. The formatter rewrites source into readable plain text. No separate
-rendered representation is needed, and formatted output is valid editable source.
+of blocks. Both `@document` and its `mikedown` version option are optional.
+Use `@document mikedown=0.1.0` to declare the supported version explicitly.
+The formatter preserves supplied declarations and never inserts a document
+annotation or version option automatically. Empty input remains empty. The
+formatter rewrites source into readable plain text. No separate rendered
+representation is needed, and formatted output is valid editable source.
 
 For every accepted source `s`, `format(format(s)) == format(s)`.
 
@@ -57,7 +61,7 @@ items do not take independent annotations in v0.1.
 
 | Annotation | Target | Supported options |
 | --- | --- | --- |
-| `@document` | Whole document | `width`, `table`, `wrap` |
+| `@document` | Whole document | `mikedown`, `width`, `table`, `wrap` |
 | `@paragraph` | Next paragraph | `width` |
 | `@quote` | Next quote block | `width` |
 | `@ol` | Next list, converting its root items to numbers | `width`, `start` |
@@ -66,6 +70,11 @@ items do not take independent annotations in v0.1.
 
 Option values:
 
+- `mikedown`: the formatter package version, currently exactly `0.1.0`. The
+  option is optional; the formatter preserves a supported explicit declaration.
+  Other versions, including malformed or empty values, are errors
+  located at the option token; they are never silently rewritten. The option is
+  supported only on `@document`.
 - `width`: positive integer display columns, or `off` to preserve physical prose
   line boundaries. Document default: `80`; blocks inherit the effective document
   width. Width is a target, not a hard maximum for indivisible content.
@@ -84,7 +93,7 @@ Option values:
 Example:
 
 ```text
-@document width=100 table=ascii
+@document mikedown=0.1.0 width=100 table=ascii
 
 @paragraph width=40
 This paragraph has its own width.
@@ -231,12 +240,16 @@ Table layout never depends on prose wrapping. Formatting uses these passes:
    the first in document order wins equal-width ties.
 4. Compute `effective_width = max(configured_width, widest_table_width)`.
 5. If the widest table exceeds the configured minimum, give it an ID if needed and
-   add/update `wrap=table:ID` in the document annotation. Reflow inheriting prose,
+   add/update `wrap=table:ID` when a document annotation is present. Without one,
+   derive the width directly without generating IDs or references. Reflow
+   inheriting prose,
    list items, and quotes to the effective width.
 
 Generated IDs use the smallest available `table-N`, starting at one. Existing IDs
-remain unchanged. If necessary, the formatter inserts the leading document
-annotation and the target's table annotation, preserving existing options.
+remain unchanged. When a document annotation is present, the formatter may insert the target's
+table annotation, preserving existing options. Without a document annotation,
+the same width is derived on every run without adding a document annotation or
+IDs for width references.
 
 On every run, the widest table is reconsidered. Changing style, editing cell text,
 adding/deleting tables, or removing the previous target can change the reference.
@@ -274,7 +287,8 @@ mikedown fmt --check FILE...
 Omitted input or `-` reads stdin in stdout mode. Stdout mode accepts one input and
 never writes it back. `--write` and `--check` require named paths and are mutually
 exclusive. `--` ends option parsing. The CLI does not scan directories; shells
-may expand globs. UTF-8 input is required; file extensions are not enforced.
+may expand globs. UTF-8 input is required. Both `.mkd` and `.md` documents use
+the same syntax and formatting behavior; file extensions are not enforced.
 
 Exit codes: `0` for success/already formatted, `1` for differences in check mode,
 `2` for usage, parsing, UTF-8, or I/O errors. Check reports and diagnostics go to

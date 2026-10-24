@@ -3,6 +3,7 @@
 //! The formatted output is valid input: tables, annotations, and generated width
 //! references are all parsed again on subsequent runs.
 
+mod inline;
 mod parser;
 mod table;
 
@@ -12,8 +13,11 @@ use unicode_width::UnicodeWidthStr;
 use parser::{Document, Kind, ListItem};
 use table::{Alignment, Style};
 
+const DOCUMENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// A formatting error located in the original source (one-based coordinates).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("{line}:{column}: {message}")]
 #[non_exhaustive]
 pub struct Diagnostic {
     /// One-based source line.
@@ -23,15 +27,6 @@ pub struct Diagnostic {
     /// Human-readable explanation.
     pub message: String,
 }
-
-impl std::fmt::Display for Diagnostic {
-    #[inline]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}: {}", self.line, self.column, self.message)
-    }
-}
-
-impl std::error::Error for Diagnostic {}
 
 fn error(line: usize, message: impl Into<String>) -> Diagnostic {
     Diagnostic {
@@ -82,6 +77,7 @@ impl Annotation {
 /// # Errors
 /// Returns source-located diagnostics for malformed or unsupported input. No
 /// partial output is returned. Unknown inline syntax remains ordinary text.
+/// Document annotations and version declarations are optional and preserved when supplied.
 #[inline]
 pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
     let mut document = parser::parse(source).map_err(|diagnostic| vec![diagnostic])?;
@@ -109,27 +105,26 @@ fn format_document(document: &mut Document) -> Result<String, Diagnostic> {
     let mut effective_width = base_width;
     if let (Some(minimum), Some((index, table_width))) = (base_width, widest) {
         if table_width > minimum {
-            let block = &mut document.blocks[index];
-            let annotation = block
-                .annotation
-                .get_or_insert_with(|| Annotation::new("table", block.line));
-            let id = if let Some(id) = annotation.options.get("id") {
-                id.clone()
-            } else {
-                let mut suffix = 1;
-                while ids.contains(&format!("table-{suffix}")) {
-                    suffix += 1;
-                }
-                let id = format!("table-{suffix}");
-                annotation.options.insert("id".into(), id.clone());
-                id
-            };
-            let annotation = document
-                .annotation
-                .get_or_insert_with(|| Annotation::new("document", 1));
-            annotation
-                .options
-                .insert("wrap".into(), format!("table:{id}"));
+            if let Some(document_annotation) = &mut document.annotation {
+                let block = &mut document.blocks[index];
+                let annotation = block
+                    .annotation
+                    .get_or_insert_with(|| Annotation::new("table", block.line));
+                let id = if let Some(id) = annotation.options.get("id") {
+                    id.clone()
+                } else {
+                    let mut suffix = 1;
+                    while ids.contains(&format!("table-{suffix}")) {
+                        suffix += 1;
+                    }
+                    let id = format!("table-{suffix}");
+                    annotation.options.insert("id".into(), id.clone());
+                    id
+                };
+                document_annotation
+                    .options
+                    .insert("wrap".into(), format!("table:{id}"));
+            }
             effective_width = Some(table_width);
         } else if let Some(annotation) = &mut document.annotation {
             annotation.options.remove("wrap");
@@ -212,8 +207,7 @@ fn measure_tables(
                 .annotation
                 .as_ref()
                 .and_then(|a| a.options.get("align"));
-            let alignments =
-                alignment.map(|a| a.split(',').map(Alignment::parse).collect::<Vec<_>>());
+            let alignments = alignment.and_then(|a| Alignment::parse_list(a));
             if let Some(alignments) = &alignments
                 && alignments.len() != table.columns()
             {
@@ -307,7 +301,7 @@ fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -
             .join("\n");
     };
     let text = lines.join(" ");
-    let tokens = inline_tokens(&text);
+    let tokens = inline::tokens(&text);
     let mut output = Vec::new();
     let mut current = first.to_owned();
     let mut has_word = false;
@@ -344,50 +338,9 @@ fn wrap_lines(lines: &[String], width: Option<usize>, first: &str, rest: &str) -
 // A wrap must not turn inline text into a heading, list, annotation, fence, or
 // table when the saved output is parsed again. Such tokens stay on the old line.
 fn unsafe_line_start(token: &str) -> bool {
-    matches!(token, "-" | "+" | "*" | ">" | "---")
-        || parser::is_annotation(token)
-        || token.starts_with(['|', '│', '┌', '├', '└'])
-        || token.starts_with("```")
-        || token.starts_with("~~~")
-        || ascii_rule(token)
-        || ((1..=6).contains(&token.len()) && token.bytes().all(|ch| ch == b'#'))
-        || token
-            .strip_suffix('.')
-            .is_some_and(|s| !s.is_empty() && s.bytes().all(|ch| ch.is_ascii_digit()))
+    parser::starts_block(token)
 }
 
 fn ascii_rule(text: &str) -> bool {
-    text.starts_with('+') && text.contains('-') && text.chars().all(|ch| ch == '+' || ch == '-')
-}
-
-fn inline_tokens(text: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let mut start = None;
-    let mut fence = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((index, ch)) = chars.next() {
-        if ch == '`' {
-            start.get_or_insert(index);
-            let mut count = 1;
-            while chars.peek().is_some_and(|(_, next)| *next == '`') {
-                chars.next();
-                count += 1;
-            }
-            if fence == 0 {
-                fence = count;
-            } else if fence == count {
-                fence = 0;
-            }
-        } else if ch.is_whitespace() && fence == 0 {
-            if let Some(begin) = start.take() {
-                tokens.push(&text[begin..index]);
-            }
-        } else {
-            start.get_or_insert(index);
-        }
-    }
-    if let Some(begin) = start {
-        tokens.push(&text[begin..]);
-    }
-    tokens
+    inline::ascii_rule(text).is_ok()
 }
