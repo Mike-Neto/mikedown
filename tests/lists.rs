@@ -52,7 +52,7 @@ fn ordinary_markdown_lists_and_alphabetic_prose_keep_their_meaning() {
     );
     assert_eq!(
         stable("@ul\n1. root\n  7. child\n  9. next\n"),
-        "@ul\n- root\n  7. child\n  8. next\n"
+        "@ul\n\n1. root\n  7. child\n  8. next\n"
     );
 }
 
@@ -192,6 +192,137 @@ fn thematic_breaks_keep_precedence_over_ordered_list_conversion() {
     let diagnostic = format("@ol\n- - -\n").unwrap_err().remove(0);
     assert!(diagnostic.message.contains("incompatible target block"));
     assert_eq!(stable("@ol\n- First\n- - -\n"), "@ol\n1. First\n\n- - -\n");
+}
+
+#[test]
+fn ordered_checkboxes_normalize_all_input_forms_and_share_ordinals() {
+    assert_eq!(
+        stable("@ol\n- [ ] One\n1. [x] Two\n[X] Three\n4. Plain\n"),
+        "@ol\n- [ ] 1. One\n- [x] 2. Two\n- [X] 3. Three\n- 4. Plain\n"
+    );
+    assert_eq!(
+        stable("@ol\n[ ] 7. One\n[x] 9. Two\n"),
+        "@ol\n- [ ] 7. One\n- [x] 8. Two\n"
+    );
+    assert_eq!(
+        stable("@ol start=3\n[ ] 7. One\n[x] 9. Two\n"),
+        "@ol start=3\n- [ ] 3. One\n- [x] 4. Two\n"
+    );
+    assert_eq!(
+        stable("@ol\n[ ]\n[x] 5.\n[X]\n"),
+        "@ol\n- [ ] 1.\n- [x] 2.\n- [X] 3.\n"
+    );
+}
+
+#[test]
+fn checkbox_subtrees_preserve_states_across_cycles_and_parent_changes() {
+    let source = "@ol\n- [ ] Root\n  - [x] Alpha\n    - [X] Roman\n      - [ ] Greek\n        - [ ] Numeric\n          - [x] Alpha again\n            - [ ] Roman again\n              - [X] Greek again\n                - [ ] Numeric again\n  - Other alpha\n    - [ ] Restarted roman\n- Other root\n  - [x] Restarted alpha\n";
+    assert_eq!(
+        stable(source),
+        "@ol\n- [ ] 1. Root\n  - [x] a. Alpha\n    - [X] i. Roman\n      - [ ] α. Greek\n        - [ ] 1. Numeric\n          - [x] a. Alpha again\n            - [ ] i. Roman again\n              - [X] α. Greek again\n                - [ ] 1. Numeric again\n  - b. Other alpha\n    - [ ] i. Restarted roman\n- 2. Other root\n  - [x] a. Restarted alpha\n"
+    );
+}
+
+#[test]
+fn checkbox_prefixes_align_wrapping_across_digit_and_unicode_boundaries() {
+    assert_eq!(
+        stable("@ol start=9 width=20\n[ ] one two three four five\n[x] six seven eight nine ten\n"),
+        "@ol start=9 width=20\n- [ ] 9. one two\n         three four\n         five\n- [x] 10. six seven\n          eight nine\n          ten\n"
+    );
+    let output = stable(
+        "@ol width=22\n- [ ] Root\n  - [ ] Alpha\n    - [ ] Roman\n      - [ ] one two three four five\n",
+    );
+    assert!(output.contains("      - [ ] α. one two\n               three\n"));
+    assert!(output.lines().all(|line| line.width() <= 22));
+    assert_eq!(
+        stable("@ol width=off\n- [ ] one   two  \n    three\\\n    four\n"),
+        "@ol width=off\n- [ ] 1. one   two  \n         three\\\n         four\n"
+    );
+    let hard_break = stable("@ol width=16\n- [ ] one two  \n    three four\\\n    five six\n");
+    assert!(hard_break.contains(
+        "- [ ] 1. one two  \n         three\n         four\\\n         five\n         six"
+    ));
+}
+
+#[test]
+fn wrapping_never_turns_inline_checkbox_text_into_a_new_item() {
+    for checkbox in ["[ ]", "[x]", "[X]"] {
+        let output = stable(&format!("@ol width=12\n- Hello {checkbox} more words\n"));
+        assert!(output.contains(&format!("Hello {checkbox}")));
+    }
+}
+
+#[test]
+fn checkbox_anchors_and_references_keep_paths_independent_of_state() {
+    let source = "See [](item:child).\n\n@ol start=3\n[ ] Parent\n  @item id=child\n  [x] 7. Child refers to [](item:child)\n";
+    let output = stable(source);
+    assert!(output.starts_with("See [3.a](item:child)."));
+    assert!(output.contains("  @item id=child\n  - [x] a. Child refers to [3.a](item:child)"));
+    let changed = stable(&output.replace("[x] a.", "[ ] a."));
+    assert!(changed.starts_with("See [3.a](item:child)."));
+    let moved = stable(&output.replace("  @item id=child\n  - [x] a.", "@item id=child\n- [x] a."));
+    assert!(moved.starts_with("See [4](item:child)."));
+}
+
+#[test]
+fn checkbox_reference_errors_keep_original_columns() {
+    for source in [
+        "@ol\n[ ] 1. 界 [](item:missing)\n",
+        "@ol\n- [x] 界 [](item:missing)\n",
+        "@ol\n- [x] 7. 界 [](item:missing)\n",
+        "@ol\n- 7. 界 [](item:missing)\n",
+        "@ol\n1. [X] 界 [](item:missing)\n",
+        "@ol\n[ ] Parent\n  [x] a. 界 [](item:missing)\n",
+        "@ol\n[ ] Parent\n        界 [](item:missing)\n",
+    ] {
+        let (line, text) = source
+            .lines()
+            .enumerate()
+            .find(|(_, text)| text.contains("missing"))
+            .unwrap();
+        let offset = text.find("missing").unwrap();
+        let diagnostic = format(source).unwrap_err().remove(0);
+        assert_eq!(
+            (diagnostic.line, diagnostic.column),
+            (line + 1, text[..offset].chars().count() + 1)
+        );
+        assert!(diagnostic.message.contains("unknown item reference"));
+    }
+}
+
+#[test]
+fn checkbox_body_text_and_non_ordered_lists_keep_their_meaning() {
+    for source in [
+        "[ ] 1. Plain prose\n",
+        "- [ ] Bullet task\n- [X] Another\n",
+        "7. [ ] Numbered task\n8. [x] Another\n",
+        "```text\n@ol\n[ ] Task\n```\n",
+        "    [ ] Task\n",
+    ] {
+        assert_eq!(stable(source), source);
+    }
+    assert_eq!(
+        stable(
+            "@ol\n- [ ] 12. Body text\n1. [x] 13. Body text\n- [-] Other state\n- [ ]No separator\n- `[ ]` Code\n"
+        ),
+        "@ol\n- [ ] 12. Body text\n- [x] 13. 13. Body text\n- 14. [-] Other state\n- 15. [ ]No separator\n- 16. `[ ]` Code\n"
+    );
+}
+
+#[test]
+fn removed_ul_directive_is_prose_and_bullet_lists_still_format() {
+    assert_eq!(
+        stable("@ul\n1. First\n2. Second\n"),
+        "@ul\n\n1. First\n2. Second\n"
+    );
+    assert_eq!(
+        stable("@ul width=off\n- First\n+ Second\n"),
+        "@ul width=off\n\n- First\n- Second\n"
+    );
+    assert_eq!(
+        stable("* [ ] First\n+ [x] Second\n"),
+        "- [ ] First\n- [x] Second\n"
+    );
 }
 
 #[test]

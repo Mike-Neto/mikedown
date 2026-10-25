@@ -4,7 +4,7 @@ items:
   - one
 ...
 
-@document mikedown=0.1.0 table=pipes width=80
+@document width=120
 
 Hello world
 

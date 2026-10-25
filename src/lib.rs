@@ -316,13 +316,18 @@ fn emit_quote(lines: &[Text], width: Option<usize>) -> String {
 fn emit_list(items: &[ListItem], annotation: Option<&Annotation>, width: Option<usize>) -> String {
     let root = items.first().map_or(0, |item| item.indent);
     let cycle = annotation.is_some_and(|value| value.name == "ol");
+    let checklist = cycle && items.iter().any(|item| item.checkbox.is_some());
     let mut output = Vec::new();
     for item in items {
         let indent = " ".repeat(item.indent - root);
         if let Some(anchor) = &item.anchor {
             output.push(format!("{indent}{}", anchor.emit()));
         }
-        let prefix = format!("{indent}{} ", item.marker);
+        let wrapper = if checklist { "- " } else { "" };
+        let prefix = item.checkbox.map_or_else(
+            || format!("{indent}{wrapper}{} ", item.marker),
+            |state| format!("{indent}{wrapper}[{state}] {} ", item.marker),
+        );
         let continuation = " ".repeat(UnicodeWidthStr::width(prefix.as_str()));
         output.push(wrap_lines(
             &item.lines,

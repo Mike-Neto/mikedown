@@ -3,7 +3,7 @@ use alloc::collections::BTreeMap;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while, take_while_m_n, take_while1};
 use nom::character::complete::{char, digit1, one_of, satisfy};
-use nom::combinator::{all_consuming, eof, map_res, peek, recognize, rest, value, verify};
+use nom::combinator::{all_consuming, eof, map, map_res, peek, recognize, rest, value, verify};
 use nom::multi::many0;
 use nom::sequence::{preceded, terminated};
 use nom::{IResult, Offset, Parser};
@@ -38,6 +38,7 @@ pub(crate) struct ListItem {
     pub indent: usize,
     pub depth: usize,
     pub ordered: bool,
+    pub checkbox: Option<char>,
     pub start: usize,
     pub lines: Vec<Text>,
     pub anchor: Option<Annotation>,
@@ -103,7 +104,7 @@ pub(crate) fn parse(source: &str) -> Result<Document, Diagnostic> {
         if let Some(annotation) = &pending {
             let compatible = matches!(
                 (&*annotation.name, &kind),
-                ("ol" | "ul", Kind::List(_))
+                ("ol", Kind::List(_))
                     | ("table", Kind::Table(_))
                     | ("paragraph", Kind::Paragraph(_))
                     | ("quote", Kind::Quote(_))
@@ -313,11 +314,29 @@ fn parse_list(lines: &[&str], index: &mut usize, cycle: bool) -> Result<Kind, Di
             None
         };
         let marker = if cycle {
-            cycle_marker(lines[*index])
+            cycle_syntax(lines[*index]).ok().map(|(_, marker)| marker)
         } else {
-            list_marker(lines[*index])
-        };
-        if let Some((indent, ordered, content)) = marker {
+            list_marker(lines[*index]).map(|(indent, ordered, content)| ParsedMarker {
+                indent,
+                ordered,
+                content,
+                checkbox: None,
+                start: source_number(lines[*index].trim_start()),
+            })
+        }
+        .filter(|marker| {
+            !cycle
+                || anchor.is_some()
+                || !aligned_continuation(lines[*index], marker.indent, items.last())
+        });
+        if let Some(ParsedMarker {
+            indent,
+            ordered,
+            content,
+            checkbox,
+            start,
+        }) = marker
+        {
             if lines[*index][..indent].contains('\t') {
                 return Err(error(*index + 1, "use spaces to indent lists"));
             }
@@ -331,12 +350,8 @@ fn parse_list(lines: &[&str], index: &mut usize, cycle: bool) -> Result<Kind, Di
                 indent: (levels.len() - 1) * 2,
                 depth: levels.len() - 1,
                 ordered,
-                start: lines[*index]
-                    .trim_start()
-                    .split('.')
-                    .next()
-                    .and_then(|n| n.parse().ok())
-                    .unwrap_or(1),
+                checkbox,
+                start,
                 lines: vec![located(content, lines[*index], *index + 1)],
                 anchor,
                 marker: String::new(),
@@ -359,6 +374,20 @@ fn parse_list(lines: &[&str], index: &mut usize, cycle: bool) -> Result<Kind, Di
         *index += 1;
     }
     Ok(Kind::List(items))
+}
+
+fn aligned_continuation(line: &str, indent: usize, previous: Option<&ListItem>) -> bool {
+    list_marker(line).is_none()
+        && checkbox_syntax(line.trim_start()).is_err()
+        && previous
+            .and_then(|item| item.lines.first())
+            .is_some_and(|body| {
+                // Empty markers omit the separator space that precedes nonempty body text.
+                let column = body
+                    .column
+                    .saturating_sub(usize::from(!body.value.is_empty()));
+                line[..indent].chars().count() >= column
+            })
 }
 
 fn located(content: &str, original: &str, line: usize) -> Text {
@@ -401,7 +430,7 @@ fn annotation_options(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "document" => Some(&["mikedown", "width", "table", "wrap"]),
         "ol" => Some(&["width", "start"]),
-        "ul" | "paragraph" | "quote" => Some(&["width"]),
+        "paragraph" | "quote" => Some(&["width"]),
         "table" => Some(&["style", "id", "align"]),
         "item" => Some(&["id"]),
         _ => None,
@@ -652,29 +681,99 @@ fn list_marker(line: &str) -> Option<(usize, bool, &str)> {
     list_syntax(line).ok().map(|(_, marker)| marker)
 }
 
-fn cycle_syntax(input: &str) -> IResult<&str, (usize, bool, &str)> {
+struct ParsedMarker<'source> {
+    indent: usize,
+    ordered: bool,
+    start: usize,
+    checkbox: Option<char>,
+    content: &'source str,
+}
+
+fn source_number(input: &str) -> usize {
+    input
+        .split('.')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .unwrap_or(1)
+}
+
+fn checkbox_syntax(input: &str) -> IResult<&str, char> {
+    let (input, _) = char('[').parse(input)?;
+    let (input, state) = one_of(" xX").parse(input)?;
+    let (input, _) = char(']').parse(input)?;
+    let (input, _) = alt((eof, tag(" "))).parse(input)?;
+    Ok((input.trim_start(), state))
+}
+
+fn ordered_content(input: &str) -> IResult<&str, (&str, &str)> {
+    let (input, label) = terminated(
+        alt((
+            digit1,
+            take_while1(|ch: char| ch.is_ascii_lowercase()),
+            take_while1(|ch| GREEK.contains(ch)),
+        )),
+        char('.'),
+    )
+    .parse(input)?;
+    let (input, content) = alt((eof, preceded(char(' '), rest))).parse(input)?;
+    Ok((input, (label, content.trim_start())))
+}
+
+fn cycle_syntax(input: &str) -> IResult<&str, ParsedMarker<'_>> {
     let (input, indentation) = whitespace(input)?;
-    let (input, ordered) = alt((
-        value(false, one_of("-*+")),
-        value(
-            true,
-            (
-                alt((
-                    digit1,
-                    take_while1(|ch: char| ch.is_ascii_lowercase()),
-                    take_while1(|ch| GREEK.contains(ch)),
-                )),
-                char('.'),
-            ),
+    if let Ok((body, state)) = checkbox_syntax(input) {
+        let (start, content) = ordered_content(body)
+            .ok()
+            .map_or((1, body), |(_, (label, content))| {
+                (source_number(label), content)
+            });
+        return Ok((
+            "",
+            ParsedMarker {
+                indent: indentation.len(),
+                ordered: true,
+                start,
+                checkbox: Some(state),
+                content,
+            },
+        ));
+    }
+    let (remaining, (ordered, content)) = alt((
+        map(ordered_content, |(_, content)| (true, content)),
+        map(
+            preceded(one_of("-*+"), alt((eof, preceded(char(' '), rest)))),
+            |content: &str| (false, content.trim_start()),
         ),
     ))
     .parse(input)?;
-    let (input, content) = alt((eof, preceded(char(' '), rest))).parse(input)?;
-    Ok((input, (indentation.len(), ordered, content.trim_start())))
+    let (checkbox, content) = checkbox_syntax(content)
+        .ok()
+        .map_or((None, content), |(body, state)| (Some(state), body));
+    let (start, content) = if ordered {
+        (source_number(input), content)
+    } else {
+        ordered_content(content)
+            .ok()
+            .map_or((1, content), |(_, (label, body))| {
+                (source_number(label), body)
+            })
+    };
+    Ok((
+        remaining,
+        ParsedMarker {
+            indent: indentation.len(),
+            ordered,
+            start,
+            checkbox,
+            content,
+        },
+    ))
 }
 
 pub(crate) fn cycle_marker(line: &str) -> Option<(usize, bool, &str)> {
-    cycle_syntax(line).ok().map(|(_, marker)| marker)
+    cycle_syntax(line)
+        .ok()
+        .map(|(_, marker)| (marker.indent, marker.ordered, marker.content))
 }
 
 fn option_pair(input: &str) -> IResult<&str, (&str, &str)> {

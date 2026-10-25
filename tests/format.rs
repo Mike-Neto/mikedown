@@ -27,7 +27,7 @@ fn core_blocks_and_nested_lists() {
         output,
         "# Heading\n\n@ol start=3\n3. first\n  a. child\n  b. another\n4. second\n\n> quoted words on two lines\n\n---\n"
     );
-    assert_eq!(stable("@ul\n1. a\n2. b\n"), "@ul\n- a\n- b\n");
+    assert_eq!(stable("@ul\n1. a\n2. b\n"), "@ul\n\n1. a\n2. b\n");
 }
 
 #[test]
@@ -205,7 +205,7 @@ fn malformed_documents_have_source_locations() {
         ("@ol color=red\n- a", "unsupported option"),
         ("@paragraph width=2 width=3\ntext", "duplicate option"),
         ("@ol", "no target"),
-        ("@ol\n@ul\n- a", "no target"),
+        ("@ol\n@quote\n- a", "no target"),
         ("@ol\nparagraph", "incompatible target"),
         ("text\n\n@document", "before all blocks"),
         ("@document\n@document", "before all blocks"),
@@ -319,11 +319,7 @@ fn complete_document_fixture() {
 
 #[test]
 fn empty_list_items_round_trip() {
-    for source in [
-        "@ol\n-\n- second\n",
-        "@ul\n1.\n2. second\n",
-        "-\n  -\n- end\n",
-    ] {
+    for source in ["@ol\n-\n- second\n", "1.\n2. second\n", "-\n  -\n- end\n"] {
         stable(source);
     }
 }
@@ -336,7 +332,7 @@ fn directives_need_no_closing_delimiter_and_keep_their_scope() {
     assert!(output.contains("twenty-four\nnext line"));
     assert!(output.contains("@quote width=off\n> quoted first line\n> quoted second line"));
     assert!(output.contains("@ol\n1. first\n2. second"));
-    assert!(output.contains("@ul\n- first\n- second"));
+    assert!(output.contains("@ul\n\n1. first\n2. second"));
     assert!(output.contains("@table style=pipes\n| a   |\n| --- |\n| b   |"));
 }
 
@@ -368,7 +364,14 @@ fn unknown_names_mentions_and_name_prefixes_are_prose() {
 
 #[test]
 fn inline_directives_and_escaped_directives_remain_text() {
-    for directive in ["@document", "@paragraph", "@quote", "@ol", "@ul", "@table"] {
+    for directive in [
+        "@document",
+        "@paragraph",
+        "@quote",
+        "@ol",
+        "@item",
+        "@table",
+    ] {
         let inline = format!("Use {directive} to configure the next block.\n");
         assert_eq!(stable(&inline), inline);
         let escaped = format!("\\{directive} width=80\n");
@@ -381,7 +384,14 @@ fn inline_directives_and_escaped_directives_remain_text() {
 
 #[test]
 fn directive_names_cannot_be_activated_by_wrapping() {
-    for directive in ["@document", "@paragraph", "@quote", "@ol", "@ul", "@table"] {
+    for directive in [
+        "@document",
+        "@paragraph",
+        "@quote",
+        "@ol",
+        "@item",
+        "@table",
+    ] {
         for prefix in ["", "- ", "> "] {
             let source =
                 format!("@document mikedown=0.1.0 width=8\n\n{prefix}hello {directive} word\n");

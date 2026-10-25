@@ -8,15 +8,15 @@ formatter again; no preview is required.
 ## Lists
 
 @ol start=3
-3. Write plain text
+- [ ] 3. Write plain text
   @item id=readable-source
-  a. Keep the source readable
-    i. Explain each idea
-      α. Choose precise words
-        1. Keep the wording simple
-  b. Add annotations when defaults are not enough
-4. Format the file
-5. Read it anywhere
+  - [x] a. Keep the source readable
+    - i. Explain each idea
+      - α. Choose precise words
+        - 1. Keep the wording simple
+  - [ ] b. Add annotations when defaults are not enough
+- 4. Format the file
+- 5. Read it anywhere
 
 See [3.a](item:readable-source) for the source-readability step. The reference
 follows that item when it moves.

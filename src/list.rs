@@ -15,12 +15,7 @@ pub(crate) fn assign(items: &mut [ListItem], annotation: Option<&Annotation>) {
     for item in items {
         numbers.retain(|indent, _| *indent <= item.indent);
         let at_root = item.indent == root;
-        let ordered = cycle
-            || if at_root {
-                annotation.map_or(item.ordered, |value| value.name == "ol")
-            } else {
-                item.ordered
-            };
+        let ordered = cycle || item.ordered;
         if ordered {
             let start = if at_root {
                 annotation
