@@ -84,55 +84,66 @@ fn quote_paragraphs_and_empty_documents() {
 }
 
 #[test]
-fn all_table_styles_have_golden_layouts() {
-    let source = "| Name | Price |\n| Coffee | 3 |\n| Tea | 2 |\n";
-    assert_eq!(
-        stable(&format!("@table style=unicode\n{source}")),
-        "@table style=unicode\n┌────────┬───────┐\n│ Name   │ Price │\n├────────┼───────┤\n│ Coffee │ 3     │\n│ Tea    │ 2     │\n└────────┴───────┘\n"
-    );
-    assert_eq!(
-        stable(&format!("@table style=ascii\n{source}")),
-        "@table style=ascii\n+--------+-------+\n| Name   | Price |\n+--------+-------+\n| Coffee | 3     |\n| Tea    | 2     |\n+--------+-------+\n"
-    );
-    assert_eq!(
-        stable(&format!("@table style=pipes\n{source}")),
-        "@table style=pipes\n| Name   | Price |\n| ------ | ----- |\n| Coffee | 3     |\n| Tea    | 2     |\n"
-    );
+fn all_table_inputs_normalize_to_left_aligned_pipes() {
+    let expected =
+        "@table\n| Name   | Price |\n| ------ | ----- |\n| Coffee | 3     |\n| Tea    | 2     |\n";
+    for source in [
+        "| Name | Price |\n| Coffee | 3 |\n| Tea | 2 |\n",
+        "┌────────┬───────┐\n│ Name   │ Price │\n├────────┼───────┤\n│ Coffee │ 3     │\n│ Tea    │ 2     │\n└────────┴───────┘\n",
+        "+--------+-------+\n| Name   | Price |\n+--------+-------+\n| Coffee | 3     |\n| Tea    | 2     |\n+--------+-------+\n",
+        "| Name | Price |\n| :---: | ---: |\n| Coffee | 3 |\n| Tea | 2 |\n",
+    ] {
+        assert_eq!(stable(&format!("@table\n{source}")), expected);
+    }
 }
 
 #[test]
-fn table_unicode_width_alignment_and_escapes_round_trip() {
-    let input = "@table align=left,right,center\n| 名 | Cost | Icon |\n| 界界 | 3 | 👩‍💻 |\n| e\u{301} | 20 | 😀 |\n";
-    for style in ["unicode", "ascii", "pipes"] {
-        let output = stable(&input.replace("align=", &format!("style={style} align=")));
-        let lines: Vec<_> = output
-            .lines()
-            .filter(|line| !line.starts_with('@') && !line.is_empty())
-            .collect();
-        assert!(
-            lines
-                .iter()
-                .all(|line| line.width() == lines.first().unwrap().width())
-        );
+fn removed_table_options_have_source_located_errors() {
+    for (directive, option, column) in [
+        ("@table", "style=unicode", 8),
+        ("@table", "style=ascii", 8),
+        ("@table", "style=pipes", 8),
+        ("@table", "align=left,right", 8),
+        ("@document", "table=pipes", 11),
+    ] {
+        let source = format!("{directive} {option}\n\n| a | b |\n");
+        let diagnostic = format(&source).unwrap_err().remove(0);
+        assert_eq!((diagnostic.line, diagnostic.column), (1, column));
+        assert!(diagnostic.message.contains("unsupported option"));
     }
-    let output = stable("| h | v |\n| a\\|b | c│d |\n| `x|y` | ``a│`b`` |\n");
-    assert!(output.contains("a\\|b"));
-    assert!(output.contains("c\\│d"));
-    assert!(output.contains("`x\\|y`"));
-    assert!(output.contains("``a\\│`b``"));
-    let aligned_output = stable("| a | b | c |\n| :--- | ---: | :---: |\n| x | 12 | y |\n");
-    assert!(!aligned_output.contains("@table"));
+}
+
+#[test]
+fn table_unicode_width_and_escapes_round_trip() {
+    let output =
+        stable("@table\n| 名 | Cost | Icon |\n| 界界 | 3 | 👩‍💻 |\n| e\u{301} | 20 | 😀 |\n");
+    let lines: Vec<_> = output
+        .lines()
+        .filter(|line| !line.starts_with('@'))
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.width() == lines.first().unwrap().width())
+    );
+    let escaped_output = stable("| h | v |\n| a\\|b | c│d |\n| `x|y` | ``a│`b`` |\n");
+    assert!(escaped_output.contains("a\\|b"));
+    assert!(escaped_output.contains("c\\│d"));
+    assert!(escaped_output.contains("`x\\|y`"));
+    assert!(escaped_output.contains("``a\\│`b``"));
+    assert_eq!(
+        stable("| a | b | c |\n| :--- | ---: | :---: |\n| x | 12 | y |\n"),
+        "| a   | b   | c   |\n| --- | --- | --- |\n| x   | 12  | y   |\n"
+    );
 }
 
 #[test]
 fn existing_formatted_tables_can_be_edited_and_reformatted() {
-    for style in ["unicode", "ascii", "pipes"] {
-        let output = stable(&format!("@table style={style}\n| Name |\n| Coffee |\n"));
-        let edited = output.replace("Coffee", "Espresso coffee");
-        let reformatted = stable(&edited);
-        assert!(reformatted.contains("Espresso coffee"));
-        assert!(!reformatted.contains("Coffee"));
-    }
+    let output = stable("@table\n| Name |\n| Coffee |\n");
+    let edited = output.replace("Coffee", "Espresso coffee");
+    let reformatted = stable(&edited);
+    assert!(reformatted.contains("Espresso coffee"));
+    assert!(!reformatted.contains("Coffee"));
 }
 
 #[test]
@@ -204,7 +215,7 @@ fn malformed_documents_have_source_locations() {
         ("@ol ---\n- item", "expected key=value"),
         ("@paragraph width=0\ntext", "invalid value"),
         ("@document mikedown=0.1.0 width=abc\ntext", "invalid value"),
-        ("@table style=html\n| a |", "invalid value"),
+        ("@table style=html\n| a |", "unsupported option"),
         ("@table id=1bad\n| a |", "invalid value"),
         ("@ol color=red\n- a", "unsupported option"),
         ("@paragraph width=2 width=3\ntext", "duplicate option"),
@@ -215,7 +226,7 @@ fn malformed_documents_have_source_locations() {
         ("@document\n@document", "before all blocks"),
         ("@table\n| a | b |\n| x |", "column count"),
         ("@table\n| a", "closing delimiters"),
-        ("@table align=right\n| a | b |", "one alignment"),
+        ("@table align=right\n| a | b |", "unsupported option"),
         (
             "@table id=x\n| a |\n\n@table id=x\n| b |",
             "duplicate table ID",
@@ -255,8 +266,8 @@ fn wrapping_never_introduces_new_blocks() {
 #[test]
 fn line_endings_are_canonical_and_annotations_sort_options() {
     assert_eq!(
-        stable("@document mikedown=0.1.0 width=80 table=pipes\r\n\r\n#  Hi\r\n"),
-        "@document mikedown=0.1.0 table=pipes width=80\n\n# Hi\n"
+        stable("@document width=80 mikedown=0.1.0\r\n\r\n#  Hi\r\n"),
+        "@document mikedown=0.1.0 width=80\n\n# Hi\n"
     );
 }
 
@@ -334,14 +345,14 @@ fn empty_list_items_round_trip() {
 
 #[test]
 fn directives_need_no_closing_delimiter_and_keep_their_scope() {
-    let source = "  @document mikedown=0.1.0 width=24\n\n  @paragraph width=off\nthis physical line remains longer than twenty-four\nnext line\n\n@quote width=off\n> quoted first line\n> quoted second line\n\n@ol\n\n- first\n- second\n\n@ul\n1. first\n2. second\n\n@table style=pipes\n| a |\n| b |\n";
+    let source = "  @document mikedown=0.1.0 width=24\n\n  @paragraph width=off\nthis physical line remains longer than twenty-four\nnext line\n\n@quote width=off\n> quoted first line\n> quoted second line\n\n@ol\n\n- first\n- second\n\n@ul\n1. first\n2. second\n\n@table\n| a |\n| b |\n";
     let output = stable(source);
     assert!(output.starts_with("@document mikedown=0.1.0 width=24\n\n@paragraph width=off\n"));
     assert!(output.contains("twenty-four\nnext line"));
     assert!(output.contains("@quote width=off\n> quoted first line\n> quoted second line"));
     assert!(output.contains("@ol\n1. first\n2. second"));
     assert!(output.contains("@ul\n\n1. first\n2. second"));
-    assert!(output.contains("@table style=pipes\n| a   |\n| --- |\n| b   |"));
+    assert!(output.contains("@table\n| a   |\n| --- |\n| b   |"));
 }
 
 #[test]
@@ -415,7 +426,7 @@ fn directive_names_cannot_be_activated_by_wrapping() {
 fn old_annotation_notation_is_prose_and_rules_remain_rules() {
     let source = "--- ol ---\n\n- first\n- second\n\n---\n\n--- table style=ascii ---\n";
     assert_eq!(stable(source), source);
-    let table = "@table style=pipes\n| a |\n| --- |\n| b |\n";
+    let table = "@table\n| a |\n| --- |\n| b |\n";
     let output = stable(table);
     assert!(output.contains("| --- |"));
     assert_eq!(
@@ -543,7 +554,7 @@ fn table_parsing_preserves_empty_cells_escapes_and_backtick_runs() {
         "| a | `unclosed | still one cell |",
         "│ a|b │ `x│y` │",
     ] {
-        let source = format!("@table style=pipes\n{row}\n");
+        let source = format!("@table\n{row}\n");
         let output = stable(&source);
         assert!(output.contains("| ---"), "{row:?}: {output}");
     }
@@ -578,8 +589,8 @@ fn document_and_version_declarations_are_optional() {
         "@document mikedown=0.1.0\n\n# Notes\n"
     );
     assert_eq!(
-        stable("@document width=12 table=pipes\n\none two three four\n"),
-        "@document table=pipes width=12\n\none two\nthree four\n"
+        stable("@document width=12\n\none two three four\n"),
+        "@document width=12\n\none two\nthree four\n"
     );
     assert_eq!(stable("@document"), "@document\n");
     for source in ["", "\n\n", " \t\r\n"] {
@@ -690,8 +701,11 @@ fn markdown_precedence_and_overrides() {
         stable("@ol start=2\n7. first\n9. second\n"),
         "@ol start=2\n2. first\n3. second\n"
     );
-    let output = stable("@table style=unicode\n| h | v |\n| --- | ---: |\n| a | b |\n");
-    assert!(output.starts_with("@table align=left,right style=unicode"));
+    let output = stable("@table\n| h | v |\n| --- | ---: |\n| a | b |\n");
+    assert_eq!(
+        output,
+        "@table\n| h   | v   |\n| --- | --- |\n| a   | b   |\n"
+    );
 }
 
 #[test]

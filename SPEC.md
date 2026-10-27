@@ -53,14 +53,14 @@ annotations. Inside `@ol`, `@item id=NAME` attaches an identity to the immediate
 indentation, without a blank line.
 
 @table id=table-1
-| Annotation   | Target                                     | Supported options                    |
-| ------------ | ------------------------------------------ | ------------------------------------ |
-| `@document`  | Whole document                             | `mikedown`, `width`, `table`, `wrap` |
-| `@paragraph` | Next paragraph                             | `width`                              |
-| `@quote`     | Next quote block                           | `width`                              |
-| `@ol`        | Next list, recursively ordering every item | `width`, `start`                     |
-| `@table`     | Next table                                 | `style`, `align`, `id`               |
-| `@item`      | Next item inside an `@ol` list             | `id` (required)                      |
+| Annotation   | Target                                     | Supported options           |
+| ------------ | ------------------------------------------ | --------------------------- |
+| `@document`  | Whole document                             | `mikedown`, `width`, `wrap` |
+| `@paragraph` | Next paragraph                             | `width`                     |
+| `@quote`     | Next quote block                           | `width`                     |
+| `@ol`        | Next list, recursively ordering every item | `width`, `start`            |
+| `@table`     | Next table                                 | `id`                        |
+| `@item`      | Next item inside an `@ol` list             | `id` (required)             |
 
 Option values:
 
@@ -70,21 +70,17 @@ Option values:
    option token; they are never silently rewritten. The option is supported only on `@document`.
 2. `width`: positive integer display columns, or `off` to preserve physical prose line boundaries. Document default:
    `80`; blocks inherit the effective document width. Width is a target, not a hard maximum for indivisible content.
-3. `table` / `style`: `unicode`, `ascii`, or `pipes`. Document default: `pipes`.
-4. `start`: positive decimal integer up to 4294967295. Default: `1`. Applies to root ordered items; nested lists inside
+3. `start`: positive decimal integer up to 4294967295. Default: `1`. Applies to root ordered items; nested lists inside
    `@ol` restart at one beneath each new parent.
-5. `align`: comma-separated `left`, `right`, or `center`, exactly one per column. For example, `align=left,right`.
-   Default: left, unless a pipe header separator supplies alignment. Right/center alignment inferred from a separator is
-   saved as a table annotation so conversion to a bordered style stays repeatable.
-6. `id`: an ASCII letter followed by ASCII letters, digits, hyphens, or underscores. IDs are unique across tables and
+4. `id`: an ASCII letter followed by ASCII letters, digits, hyphens, or underscores. IDs are unique across tables and
    anchored list items in a document.
-7. `wrap`: `table:ID`. This is a formatter-maintained reference to the widest table, not a request to pin a particular table.
+5. `wrap`: `table:ID`. This is a formatter-maintained reference to the widest table, not a request to pin a particular table.
    See section 5.
 
 Example:
 
 ```text
-@document mikedown=0.1.0 width=100 table=ascii
+@document mikedown=0.1.0 width=100
 
 @paragraph width=40
 This paragraph has its own width.
@@ -165,19 +161,26 @@ every item gets a Markdown bullet wrapper, including ordinary items, so GitHub r
 - [ ] 1. Prepare
   - [x] a. Gather materials
   - b. Check quantities
-- 2. Continue
+- 2\. Continue
 ```
 
 Checkbox and ordinary items share the same numbering sequence, nesting cycle, and counter resets. Completion states are
 independent: formatting never checks a parent because its children are checked. Continuation lines align beneath the
 item text, after the checkbox and generated marker.
 
+Decimal labels on ordinary items in a wrapped checklist escape their dot, as in `- 2\. Continue`, so Markdown renderers
+display the number as text instead of creating another nested ordered list. Checkbox items and alphabetic, Roman, and
+Greek labels need no escape. The escape counts toward source width and continuation alignment.
+
 Bare input such as `[ ] Task` is accepted inside `@ol`, as are conventional items such as `- [ ] Task` and
 `1. [x] Task`. Previous checkbox-first output such as `[ ] 1. Task` is also accepted. These normalize to the wrapped
 form `- [ ] 1. Task`. An ordinal immediately after a bullet wrapper or its checkbox is structural numbering and is
 regenerated; `start=N` still controls the root. For example, `- [ ] 12. Task` starts at twelve when no root start is
-specified. Escape a label-like body prefix as `12\.` to keep it literal. Only one generated label is consumed, and an
-empty checkbox item is valid. Unannotated lists retain their original interpretation of numeric body text.
+specified. After a bullet without a checkbox, an escaped decimal label such as `- 12\. Task` also supplies structural
+numbering, including when the final checkbox has been removed. After a checkbox, `12\.` remains literal body text. To
+keep a numeric body prefix on an ordinary item, supply its generated label first: `- 1\. 12\. Literal`. Only one
+generated label is consumed, and empty items are valid. Unannotated lists retain their original interpretation of
+numeric body text.
 
 A checkbox must be followed by an ASCII space or end-of-line. Other bracketed forms remain ordinary item text. Outside
 `@ol`, checkbox text retains its original meaning and placement. Anchors attach to checkbox items in the same way as
@@ -236,47 +239,28 @@ the header. Normalized content rows must contain the same number of cells; empty
 belong to one table; separate two tables with a blank line or annotation.
 
 A pipe table may have a separator immediately after its header. Separator cells are three or more hyphens with optional
-leading/trailing `:` for alignment. A leading colon means left, a trailing colon means right, and both mean center. An
-all-separator row is reserved syntax and cannot be the first row.
+leading/trailing colons. Colons are accepted for Markdown compatibility and removed during formatting; all cells are
+left-aligned. An all-separator row is reserved syntax and cannot be the first row.
 
 Outside inline code, a backslash escapes the next character for delimiter recognition and remains in the saved text. Use
-`\|` or `\│` for literal delimiters. Matching backtick runs also protect delimiters inside inline code. When converting
-styles, the formatter escapes literal delimiters inside cells, including code spans. Cell text is preserved apart from
-trimming surrounding whitespace and introducing these necessary escapes. No content is truncated and no cells are
-wrapped.
+`\|` or `\│` for literal delimiters. Matching backtick runs also protect delimiters inside inline code. The formatter
+escapes literal delimiters inside cells, including code spans. Cell text is preserved apart from trimming surrounding
+whitespace and introducing these necessary escapes. No content is truncated and no cells are wrapped.
 
-Column width is the maximum displayed width of its cells. Every cell receives one space of padding on either side.
-Additional padding implements alignment; odd center padding puts the extra space on the right. Pipe tables have minimum
-content widths of three, four, and five columns for left, right, and center alignment respectively, so separator rows
-always retain at least three hyphens. Bordered tables have a minimum content width of one.
-
-Styles:
+Output always uses Markdown pipes with a header separator and left-aligned cells. Each column has a minimum content
+width of three and otherwise uses the maximum displayed width of its cells. Every cell receives one space of padding on
+either side, with additional padding on the right to fill its column. Separator cells contain only hyphens.
 
 ```text
-@table style=unicode
-┌──────┬───────┐
-│ Name │ Value │
-├──────┼───────┤
-│ Tea  │ 2     │
-└──────┴───────┘
-
-@table style=ascii
-+------+-------+
-| Name | Value |
-+------+-------+
-| Tea  | 2     |
-+------+-------+
-
-@table style=pipes
+@table
 | Name | Value |
 | ---- | ----- |
 | Tea  | 2     |
 ```
 
-Unicode uses `┌┬┐`, `├┼┤`, `└┴┘`, `─`, and `│`. ASCII uses `+`, `-`, and `|`. Borders appear above the header, between
-header and body, and below the table. For a header-only table the bottom border also closes the header. Pipe style has
-only the header separator. Existing border widths are ignored on input so cells can be edited directly; border character
-families are validated and every border is regenerated. A table must have at least a header row.
+ASCII and Unicode borders are accepted only as input. Existing border widths are ignored so cells can be edited
+directly; border character families are validated. A table must have at least a header row. Table annotations support
+only `id`; `style`, `align`, and document-level `table` options are unsupported and produce source-located errors.
 
 ## 5. Tables as document wrapping targets
 
@@ -285,7 +269,7 @@ Table layout never depends on prose wrapping. Formatting uses these passes:
 @ol
 1. Parse and validate every block and annotation, including unique table and item IDs.
 2. Assign list markers and full item paths, then resolve item references in all supported text.
-3. Lay out all tables using their effective styles and alignments.
+3. Lay out all tables as left-aligned Markdown pipes.
 4. Measure each complete table, including borders and padding. Select the widest; the first in document order wins
    equal-width ties.
 5. Compute `effective_width = max(configured_width, widest_table_width)`.
@@ -298,10 +282,10 @@ remain unchanged. When a document annotation is present, the formatter may inser
 preserving existing options. Without a document annotation, the same width is derived on every run without adding a
 document annotation or IDs for width references.
 
-On every run, the widest table is reconsidered. Changing style, editing cell text, adding/deleting tables, or removing
-the previous target can change the reference. A syntactically valid stale reference is repaired automatically. If no
-table is wider than the configured minimum, `wrap` is removed. Existing annotations and IDs remain, even if no longer
-needed as targets. Duplicate IDs are errors.
+On every run, the widest table is reconsidered. Editing cell text, adding/deleting tables, or removing the previous
+target can change the reference. A syntactically valid stale reference is repaired automatically. If no table is wider
+than the configured minimum, `wrap` is removed. Existing annotations and IDs remain, even if no longer needed as
+targets. Duplicate IDs are errors.
 
 If document `width=off`, prose is not reflowed and no wrapping reference is kept. Explicit block widths, including
 `off`, override table-driven document width. Headings and literal code are never reflowed.
@@ -363,8 +347,6 @@ when unclosed. YAML is never parsed or sorted. Front matter precedes an optional
 Trailing-space and backslash hard breaks survive wrapping in paragraphs, quotes, and existing list continuations. Each
 segment wraps independently; `width=off` preserves physical lines.
 
-Pipe tables are the default, including when input uses borders. Set document `table=unicode`/`table=ascii` or table
-`style=unicode`/`style=ascii` to retain bordered output. Inferred alignment stays in pipe separators; bordered output
-receives alignment metadata when needed for round trips. Irregular unannotated tables remain verbatim; explicit `@table`
-targets retain strict validation. Recursive quotes, multi-paragraph list items, code nested in lists, Obsidian syntax,
-and rendering remain deferred.
+Tables always format as left-aligned pipes, including when input uses borders or alignment colons. Irregular unannotated
+tables remain verbatim; explicit `@table` targets retain strict validation. Recursive quotes, multi-paragraph list
+items, code nested in lists, Obsidian syntax, and rendering remain deferred.

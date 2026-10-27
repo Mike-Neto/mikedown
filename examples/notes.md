@@ -5,7 +5,7 @@
 Save a Mikedown document with the .md extension and format it with the same CLI. The document declaration records the
 Mikedown version used by the formatter.
 
-@table style=pipes
+@table
 | Command                       | Purpose          |
 | ----------------------------- | ---------------- |
 | mikedown fmt notes.md         | Print formatted  |

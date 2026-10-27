@@ -22,5 +22,5 @@ five six
 8. next
 
 | Name | Cost |
-| ---- | ---: |
-| Tea  |    3 |
+| ---- | ---- |
+| Tea  | 3    |

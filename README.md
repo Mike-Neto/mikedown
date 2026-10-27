@@ -23,13 +23,11 @@ A quiet start to the day.
   b. Heat the water
 2. Plan the day
 
-@table style=unicode
-┌────────┬───────┐
-│ Drink  │ Price │
-├────────┼───────┤
-│ Coffee │ 3     │
-│ Tea    │ 2     │
-└────────┴───────┘
+@table
+| Drink  | Price |
+| ------ | ----- |
+| Coffee | 3     |
+| Tea    | 2     |
 ```
 
 The small annotations are visible too. They carry the document's formatting choices alongside its content, so those

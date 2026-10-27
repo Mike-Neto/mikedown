@@ -198,7 +198,7 @@ fn thematic_breaks_keep_precedence_over_ordered_list_conversion() {
 fn ordered_checkboxes_normalize_all_input_forms_and_share_ordinals() {
     assert_eq!(
         stable("@ol\n- [ ] One\n1. [x] Two\n[X] Three\n4. Plain\n"),
-        "@ol\n- [ ] 1. One\n- [x] 2. Two\n- [X] 3. Three\n- 4. Plain\n"
+        "@ol\n- [ ] 1. One\n- [x] 2. Two\n- [X] 3. Three\n- 4\\. Plain\n"
     );
     assert_eq!(
         stable("@ol\n[ ] 7. One\n[x] 9. Two\n"),
@@ -215,11 +215,54 @@ fn ordered_checkboxes_normalize_all_input_forms_and_share_ordinals() {
 }
 
 #[test]
+fn escaped_wrapper_labels_preserve_starts_empty_items_and_references() {
+    for label in ["9.", "9\\."] {
+        let source = format!(
+            "@ol\n@item id=plain\n- {label} One\n- [ ] Task\n- 11\\.\n\nSee [](item:plain).\n"
+        );
+        let output = stable(&source);
+        assert_eq!(
+            output,
+            "@ol\n@item id=plain\n- 9\\. One\n- [ ] 10. Task\n- 11\\.\n\nSee [9](item:plain).\n"
+        );
+        let changed = stable(&output.replace("@ol\n", "@ol start=12\n"));
+        assert!(changed.contains("- 12\\. One\n- [ ] 13. Task\n- 14\\."));
+        assert!(changed.contains("See [12](item:plain)."));
+        let without_checkbox = stable(&output.replace("- [ ] ", "- "));
+        assert!(without_checkbox.contains("9. One\n10. Task\n11.\n"));
+    }
+    assert_eq!(stable("@ol\n- 9\\. One\n"), "@ol\n9. One\n");
+    assert_eq!(
+        stable("@ol\n- 9\\.No separator\n"),
+        "@ol\n1. 9\\.No separator\n"
+    );
+    assert_eq!(stable("- 9\\. Literal\n"), "- 9\\. Literal\n");
+    assert_eq!(
+        stable("@ol\n- 1\\. 12\\. Literal\n- [x] Done\n"),
+        "@ol\n- 1\\. 12\\. Literal\n- [x] 2. Done\n"
+    );
+}
+
+#[test]
+fn escaped_wrapper_labels_count_toward_source_width_and_continuations() {
+    let output = stable("@ol start=9 width=20\n- [ ] Task\n- one two three four five six\n-\n");
+    assert_eq!(
+        output,
+        "@ol start=9 width=20\n- [ ] 9. Task\n- 10\\. one two three\n       four five six\n- 11\\.\n"
+    );
+    assert!(output.lines().all(|line| line.width() <= 20));
+    assert_eq!(
+        stable("@ol width=off\n- one   two  \n    three\\\n    four\n- [ ] Task\n"),
+        "@ol width=off\n- 1\\. one   two  \n      three\\\n      four\n- [ ] 2. Task\n"
+    );
+}
+
+#[test]
 fn checkbox_subtrees_preserve_states_across_cycles_and_parent_changes() {
     let source = "@ol\n- [ ] Root\n  - [x] Alpha\n    - [X] Roman\n      - [ ] Greek\n        - [ ] Numeric\n          - [x] Alpha again\n            - [ ] Roman again\n              - [X] Greek again\n                - [ ] Numeric again\n  - Other alpha\n    - [ ] Restarted roman\n- Other root\n  - [x] Restarted alpha\n";
     assert_eq!(
         stable(source),
-        "@ol\n- [ ] 1. Root\n  - [x] a. Alpha\n    - [X] i. Roman\n      - [ ] α. Greek\n        - [ ] 1. Numeric\n          - [x] a. Alpha again\n            - [ ] i. Roman again\n              - [X] α. Greek again\n                - [ ] 1. Numeric again\n  - b. Other alpha\n    - [ ] i. Restarted roman\n- 2. Other root\n  - [x] a. Restarted alpha\n"
+        "@ol\n- [ ] 1. Root\n  - [x] a. Alpha\n    - [X] i. Roman\n      - [ ] α. Greek\n        - [ ] 1. Numeric\n          - [x] a. Alpha again\n            - [ ] i. Roman again\n              - [X] α. Greek again\n                - [ ] 1. Numeric again\n  - b. Other alpha\n    - [ ] i. Restarted roman\n- 2\\. Other root\n  - [x] a. Restarted alpha\n"
     );
 }
 
@@ -271,6 +314,7 @@ fn checkbox_reference_errors_keep_original_columns() {
         "@ol\n- [x] 界 [](item:missing)\n",
         "@ol\n- [x] 7. 界 [](item:missing)\n",
         "@ol\n- 7. 界 [](item:missing)\n",
+        "@ol\n- 7\\. 界 [](item:missing)\n",
         "@ol\n1. [X] 界 [](item:missing)\n",
         "@ol\n[ ] Parent\n  [x] a. 界 [](item:missing)\n",
         "@ol\n[ ] Parent\n        界 [](item:missing)\n",
@@ -305,7 +349,7 @@ fn checkbox_body_text_and_non_ordered_lists_keep_their_meaning() {
         stable(
             "@ol\n- [ ] 12. Body text\n1. [x] 13. Body text\n- [-] Other state\n- [ ]No separator\n- `[ ]` Code\n"
         ),
-        "@ol\n- [ ] 12. Body text\n- [x] 13. 13. Body text\n- 14. [-] Other state\n- 15. [ ]No separator\n- 16. `[ ]` Code\n"
+        "@ol\n- [ ] 12. Body text\n- [x] 13. 13. Body text\n- 14\\. [-] Other state\n- 15\\. [ ]No separator\n- 16\\. `[ ]` Code\n"
     );
 }
 

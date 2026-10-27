@@ -509,7 +509,7 @@ fn batch_errors_report_all_failures_without_writing_valid_inputs() {
 #[test]
 fn markdown_extension_supports_stdout_check_and_write() {
     let workspace = Workspace::new();
-    let original = "#    Notes\n\n@table style=pipes\n| Item | Count |\n| Coffee | 2 |\n";
+    let original = "#    Notes\n\n@table\n| Item | Count |\n| Coffee | 2 |\n";
     let markdown = workspace.file("notes.md", original);
     let native = workspace.file("notes.mkd", original);
     let expected = mikedown::format(original).unwrap();

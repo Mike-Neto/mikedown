@@ -21,8 +21,8 @@ included in the binary today.
 ## Zed extension
 
 @ol
-- [ ] 1. Build a Tree-sitter grammar for blocks and annotations, including all three table styles and literal code. Add
-         highlighting, outlines, folding, and code fence injections. Associate `.mkd` with Mikedown.
+- [ ] 1. Build a Tree-sitter grammar for blocks and annotations, including pipe tables, bordered table input, and
+         literal code. Add highlighting, outlines, folding, and code fence injections. Associate `.mkd` with Mikedown.
 - [ ] 2. Match only defined `@name` directives with whitespace/end-of-line name boundaries; leave mentions and unknown
          names as prose in both editor grammars.
 - [ ] 3. Register a development extension and document using `mikedown fmt -` as Zed's external formatter. Use the

@@ -9,7 +9,7 @@ mod inline;
 mod list;
 /// Block recognizers and source-located syntax validation.
 mod parser;
-/// Table recognition, alignment, and border rendering.
+/// Table recognition and Markdown pipe rendering.
 mod table;
 mod text;
 
@@ -18,7 +18,6 @@ use core::mem;
 use unicode_width::UnicodeWidthStr;
 
 use parser::{Document, Kind};
-use table::{Alignment, Style};
 use text::{Targets, Text};
 
 /// Language version accepted by explicit document declarations.
@@ -61,16 +60,6 @@ impl Annotation {
             text.push_str(value);
         }
         text
-    }
-
-    /// Create an annotation with no options at the supplied source line.
-    fn new(name: &str, line: usize) -> Self {
-        Self {
-            name: name.into(),
-            options: BTreeMap::new(),
-            line,
-            id_column: 1,
-        }
     }
 
     /// Resolve local wrapping width, including explicit width=off.
@@ -303,7 +292,6 @@ pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
                                         let start = start.strict_add(1);
                                         let result: Result<Table, Diagnostic> = 'parse_table: {
                                             let mut rows: Vec<Vec<Text>> = Vec::new();
-                                            let mut alignments = Vec::new();
                                             let mut header_boundary = false;
                                             for (offset, (row_line, original)) in table_lines.iter().zip(originals).enumerate() {
                                                 let row_text = row_line.trim();
@@ -385,18 +373,6 @@ pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
                                                     if rows.len() != 1 || header_boundary {
                                                         break 'parse_table Err(error(start.strict_add(offset), "table separator must follow the header"));
                                                     }
-                                                    alignments = cells
-                                                        .iter()
-                                                        .map(|cell| {
-                                                            if cell.starts_with(':') && cell.ends_with(':') {
-                                                                Alignment::Center
-                                                            } else if cell.ends_with(':') {
-                                                                Alignment::Right
-                                                            } else {
-                                                                Alignment::Left
-                                                            }
-                                                        })
-                                                        .collect();
                                                     header_boundary = true;
                                                 } else {
                                                                                                         let mut cursor: usize = 0;
@@ -415,10 +391,7 @@ pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
                                             if rows.is_empty() {
                                                 break 'parse_table Err(error(start, "table has no header row"));
                                             }
-                                            if alignments.is_empty() {
-                                                alignments = vec![Alignment::Left; rows.first().map_or(0, Vec::len)];
-                                            }
-                                            Ok(Table { alignments, rows })
+                                            Ok(Table { rows })
                                         };
                                         result
                                     };
@@ -648,84 +621,32 @@ pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
                 .annotation
                 .as_ref()
                 .map_or(Some(80), |annotation| annotation.width(Some(80)));
-            let default_style = document
-                .annotation
-                .as_ref()
-                .and_then(|annotation| annotation.options.get("table"))
-                .map_or(Style::Pipes, |style| {
-                    Style::parse(style).unwrap_or(Style::Pipes)
-                });
             let TableLayout {
                 ids,
                 widest,
                 mut text,
             } = {
-                let stage_result = {
-                    // Measure tables.
-
-                    let ids: BTreeSet<String> = reserved_ids;
-                    let result: Result<TableLayout, Diagnostic> = 'measure_tables: {
-                        let mut widest: Option<(usize, usize)> = None;
-                        let mut table_text = BTreeMap::new();
-
-                        // Tables are independent of prose width, so this pass cannot form a layout cycle.
-                        for (index, block) in document.blocks.iter_mut().enumerate() {
-                            if let Kind::Table(table) = &block.kind {
-                                let style = block
-                                    .annotation
-                                    .as_ref()
-                                    .and_then(|annotation| annotation.options.get("style"))
-                                    .map_or(default_style, |style| {
-                                        Style::parse(style).unwrap_or(default_style)
-                                    });
-                                if style != Style::Pipes
-                                    && table.has_alignment()
-                                    && block.annotation.as_ref().is_none_or(|annotation| {
-                                        !annotation.options.contains_key("align")
-                                    })
-                                {
-                                    let annotation = block.annotation.get_or_insert_with(|| {
-                                        Annotation::new("table", block.line)
-                                    });
-                                    annotation
-                                        .options
-                                        .insert("align".into(), table.alignment_option());
-                                }
-                                let alignment = block
-                                    .annotation
-                                    .as_ref()
-                                    .and_then(|annotation| annotation.options.get("align"));
-                                let alignments =
-                                    alignment.and_then(|value| Alignment::parse_list(value));
-                                if let Some(alignments) = &alignments
-                                    && alignments.len() != table.columns()
-                                {
-                                    break 'measure_tables Err(error(
-                                        block.line,
-                                        "align must contain one alignment per table column",
-                                    ));
-                                }
-                                let text = table.emit(style, alignments.as_deref());
-                                let width =
-                                    text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0);
-                                if widest.is_none_or(|(_, previous)| width > previous) {
-                                    widest = Some((index, width));
-                                }
-                                table_text.insert(index, text);
-                            }
+                // Tables are independent of prose width, so this pass cannot form a layout cycle.
+                let mut widest: Option<(usize, usize)> = None;
+                let mut table_text = BTreeMap::new();
+                for (index, block) in document.blocks.iter().enumerate() {
+                    if let Kind::Table(table) = &block.kind {
+                        let rendered = table.emit();
+                        let width = rendered
+                            .lines()
+                            .map(UnicodeWidthStr::width)
+                            .max()
+                            .unwrap_or(0);
+                        if widest.is_none_or(|(_, previous)| width > previous) {
+                            widest = Some((index, width));
                         }
-
-                        Ok(TableLayout {
-                            ids,
-                            widest,
-                            text: table_text,
-                        })
-                    };
-                    result
-                };
-                match stage_result {
-                    Ok(value) => value,
-                    Err(failure) => break 'format_document Err(failure),
+                        table_text.insert(index, rendered);
+                    }
+                }
+                TableLayout {
+                    ids: reserved_ids,
+                    widest,
+                    text: table_text,
                 }
             };
 
@@ -737,9 +658,12 @@ pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
                     let Some(block) = document.blocks.get_mut(index) else {
                         break 'format_document Err(error(1, "wrapping table is missing"));
                     };
-                    let annotation = block
-                        .annotation
-                        .get_or_insert_with(|| Annotation::new("table", block.line));
+                    let annotation = block.annotation.get_or_insert_with(|| Annotation {
+                        name: "table".into(),
+                        options: BTreeMap::new(),
+                        line: block.line,
+                        id_column: 1,
+                    });
                     let id = if let Some(id) = annotation.options.get("id") {
                         id.clone()
                     } else {
@@ -815,7 +739,17 @@ pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
                             }
                             let wrapper = if checklist { "- " } else { "" };
                             let prefix = item.checkbox.map_or_else(
-                                || format!("{indent}{wrapper}{} ", item.marker),
+                                || {
+                                    // A bare decimal label after a bullet starts another GFM list.
+                                    let marker = if checklist
+                                        && item.marker.starts_with(|ch: char| ch.is_ascii_digit())
+                                    {
+                                        item.marker.replace('.', "\\.")
+                                    } else {
+                                        item.marker.clone()
+                                    };
+                                    format!("{indent}{wrapper}{marker} ")
+                                },
                                 |state| format!("{indent}{wrapper}[{state}] {} ", item.marker),
                             );
                             let continuation = " ".repeat(UnicodeWidthStr::width(prefix.as_str()));

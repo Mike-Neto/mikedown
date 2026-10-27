@@ -1,4 +1,4 @@
-@document width=32 table=unicode
+@document width=32
 
 #    Morning
 

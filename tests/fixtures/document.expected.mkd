@@ -1,4 +1,4 @@
-@document table=unicode width=32
+@document width=32
 
 # Morning
 
@@ -14,12 +14,10 @@ width.
 > every editor.
 
 @table
-┌────────┬───────┐
-│ Drink  │ Price │
-├────────┼───────┤
-│ Coffee │ 3     │
-│ Tea    │ 2     │
-└────────┴───────┘
+| Drink  | Price |
+| ------ | ----- |
+| Coffee | 3     |
+| Tea    | 2     |
 
 ```text
 @ol

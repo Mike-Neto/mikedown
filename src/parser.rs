@@ -9,7 +9,7 @@ use nom::sequence::{preceded, terminated};
 use nom::{IResult, Offset as _, Parser as _};
 
 use crate::list::GREEK;
-use crate::table::{Alignment, Style, Table};
+use crate::table::Table;
 use crate::text::Text;
 use crate::{Annotation, Diagnostic, error};
 
@@ -111,7 +111,7 @@ pub enum Kind {
     Paragraph(Vec<Text>),
     /// Quote body lines with their prefixes removed.
     Quote(Vec<Text>),
-    /// Rectangular cells and column alignment.
+    /// Rectangular table cells.
     Table(Table),
 }
 
@@ -328,11 +328,10 @@ pub fn is_annotation(line: &str) -> bool {
 /// Return the allowed option names for a supported annotation.
 fn annotation_options(name: &str) -> Option<&'static [&'static str]> {
     match name {
-        "document" => Some(&["mikedown", "width", "table", "wrap"]),
+        "document" => Some(&["mikedown", "width", "wrap"]),
         "ol" => Some(&["width", "start"]),
         "paragraph" | "quote" => Some(&["width"]),
-        "table" => Some(&["style", "id", "align"]),
-        "item" => Some(&["id"]),
+        "table" | "item" => Some(&["id"]),
         _ => None,
     }
 }
@@ -636,6 +635,17 @@ fn cycle_syntax(input: &str) -> IResult<&str, ParsedMarker<'_>> {
         (source_number(input), content)
     } else {
         ordered_content(content)
+            .or_else(|failure| {
+                if checkbox.is_none() {
+                    // Escaped decimal wrapper labels remain numbering, not body text.
+                    let (marker_rest, (label, _, body)) =
+                        (digit1, tag("\\."), alt((eof, preceded(char(' '), rest))))
+                            .parse(content)?;
+                    Ok((marker_rest, (label, body.trim_start())))
+                } else {
+                    Err(failure)
+                }
+            })
             .ok()
             .map_or((1, content), |(_, (label, body))| {
                 (source_number(label), body)
@@ -725,7 +735,6 @@ pub fn parse_annotation(line: &str, number: usize) -> Result<Annotation, Diagnos
             "mikedown" => true,
             "width" => value == "off" || positive_number(value),
             "start" => positive_number(value) && value.parse::<u32>().is_ok(),
-            "table" | "style" => Style::parse(value).is_some(),
             "id" => valid_id(value),
             "wrap" => {
                 // Wrap reference.
@@ -736,7 +745,6 @@ pub fn parse_annotation(line: &str, number: usize) -> Result<Annotation, Diagnos
                 result
             }
             .is_ok(),
-            "align" => Alignment::parse_list(value).is_some(),
             _ => false,
         };
         if !valid {

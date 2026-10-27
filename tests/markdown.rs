@@ -54,12 +54,77 @@ fn mixed_checklists_render_real_nested_checkboxes_and_generated_labels() {
     );
     assert_eq!(
         formatted,
-        "@ol\n- 1. Prepare\n  - [x] a. Gather materials\n  - b. Check quantities\n- [ ] 2. Continue\n"
+        "@ol\n- 1\\. Prepare\n  - [x] a. Gather materials\n  - b. Check quantities\n- [ ] 2. Continue\n"
     );
     assert_eq!(checkbox_depths(&formatted), [(2, true), (1, false)]);
     assert_eq!(output.matches("type=\"checkbox\"").count(), 2);
     assert!(output.contains("a. Gather materials"));
     assert!(output.contains("b. Check quantities"));
+    assert!(!output.contains("<pre>"));
+    assert!(!output.contains("<ol"));
+}
+
+#[test]
+fn tour_renders_eight_items_at_their_intended_depths() {
+    let source = include_str!("../examples/tour.mkd");
+    let (formatted, _) = rendered(source);
+    assert_eq!(formatted, source);
+    let section = formatted
+        .split("## Lists\n\n")
+        .nth(1)
+        .unwrap()
+        .split("\n## Tables")
+        .next()
+        .unwrap();
+    let mut depth: usize = 0;
+    let mut item_depths = Vec::new();
+    for event in Parser::new_ext(section, Options::ENABLE_TASKLISTS) {
+        match event {
+            Event::Start(Tag::List(ordered)) => {
+                assert!(ordered.is_none(), "generated labels must stay literal");
+                depth = depth.strict_add(1);
+            }
+            Event::End(TagEnd::List(_)) => depth = depth.strict_sub(1),
+            Event::Start(Tag::Item) => item_depths.push(depth),
+            Event::Start(_)
+            | Event::End(_)
+            | Event::Text(_)
+            | Event::Code(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::FootnoteReference(_)
+            | Event::SoftBreak
+            | Event::HardBreak
+            | Event::Rule
+            | Event::TaskListMarker(_) => {}
+        }
+    }
+    assert_eq!(item_depths, [1, 2, 3, 4, 5, 2, 1, 1]);
+    assert_eq!(
+        checkbox_depths(section),
+        [(1, false), (2, true), (2, false)]
+    );
+    let mut output = String::new();
+    html::push_html(
+        &mut output,
+        Parser::new_ext(section, Options::ENABLE_TASKLISTS),
+    );
+    for text in [
+        "3. Write plain text",
+        "a. Keep the source readable",
+        "i. Explain each idea",
+        "α. Choose precise words",
+        "1. Keep the wording simple",
+        "b. Add annotations",
+        "4. Format the file",
+        "5. Read it anywhere",
+        "@item id=readable-source",
+        ">3.a</a>",
+    ] {
+        assert!(output.contains(text), "missing rendered text: {text}");
+    }
     assert!(!output.contains("<pre>"));
 }
 

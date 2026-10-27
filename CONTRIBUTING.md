@@ -12,7 +12,7 @@ dependencies, Cargo commands support `--offline`.
    language diagnostics; parsing never mutates files.
 2. `src/inline.rs`: shared nom recognition of backtick runs and table escapes, used by prose tokenization, table cells,
    and delimiter escaping.
-3. `src/table.rs`: shared table recognizers, alignment validation, and all three text layouts.
+3. `src/table.rs`: shared table recognizers and left-aligned Markdown pipe output.
 4. `src/lib.rs`: scoped document and table parsing, list-label assignment, reference maintenance, table measurement,
    prose wrapping, and canonical emission. This is the shared core for future plugins.
 5. `src/main.rs`: clap derive argument handling, UTF-8 I/O, batch validation, staged atomic replacement, and exit codes.
