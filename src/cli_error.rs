@@ -6,57 +6,55 @@ use std::path::{Path, PathBuf};
 use mikedown::Diagnostic;
 use thiserror::Error;
 
+/// Runtime failures retaining their source errors and affected paths.
 #[derive(Debug, Error)]
-pub(crate) enum CliError {
+pub enum CliError {
+    // Aggregates retain every error rather than inventing a single source chain.
+    /// All input failures collected before any output files are changed.
+    #[error("{}", .0.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"))]
+    Batch(Vec<Self>),
+    /// A repeated canonical path in a write batch.
+    #[error("{}: duplicate input file", .0.display())]
+    DuplicateInput(PathBuf),
+    /// Filesystem failure for a particular input or replacement.
     #[error("{}: {source}", path.display())]
     FileIo {
+        /// Path associated with the failure.
         path: PathBuf,
+        /// Original operating-system I/O error.
         #[source]
         source: io::Error,
     },
-    #[error("stdin: {0}")]
-    Stdin(#[source] io::Error),
-    #[error("stdout: {0}")]
-    Stdout(#[source] io::Error),
-    #[error("{}: duplicate input file", .0.display())]
-    DuplicateInput(PathBuf),
-    #[error("{}: --write requires a regular file, not a symlink", .0.display())]
-    InvalidWriteTarget(PathBuf),
-    #[error("{}: could not allocate a temporary file", .0.display())]
-    TemporaryFileExhausted(PathBuf),
-    #[error("{}", render_diagnostics(.path, .diagnostics))]
+    /// Source-located document validation failures.
+    #[error("{}", diagnostics.iter().map(|diagnostic| format!("{}:{diagnostic}", path.display())).collect::<Vec<_>>().join("\n"))]
     Format {
+        /// Path associated with the failure.
         path: PathBuf,
+        /// All formatting diagnostics retained for this input.
         diagnostics: Vec<Diagnostic>,
     },
-    // Aggregates retain every error rather than inventing a single source chain.
-    #[error("{}", render_batch(.0))]
-    Batch(Vec<Self>),
+    /// Write target that is not an ordinary regular file.
+    #[error("{}: --write requires a regular file, not a symlink", .0.display())]
+    InvalidWriteTarget(PathBuf),
+    /// Failure reading UTF-8 text from standard input.
+    #[error("stdin: {0}")]
+    Stdin(#[source] io::Error),
+    /// Failure writing formatted text or help to standard output.
+    #[error("stdout: {0}")]
+    Stdout(#[source] io::Error),
+    /// No staging filename was available after bounded retries.
+    #[error("{}: could not allocate a temporary file", .0.display())]
+    TemporaryFileExhausted(PathBuf),
 }
 
 impl CliError {
+    /// Attach an input path to an underlying filesystem error.
     pub(crate) fn file(path: &Path, source: io::Error) -> Self {
         Self::FileIo {
             path: path.to_owned(),
             source,
         }
     }
-}
-
-fn render_diagnostics(path: &Path, diagnostics: &[Diagnostic]) -> String {
-    diagnostics
-        .iter()
-        .map(|diagnostic| format!("{}:{diagnostic}", path.display()))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn render_batch(errors: &[CliError]) -> String {
-    errors
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]
@@ -125,12 +123,14 @@ mod tests {
         let CliError::Batch(errors) = error else {
             unreachable!("constructed a batch error");
         };
-        assert_eq!(errors.len(), 2);
+        let [format_error, io_error] = errors.as_slice() else {
+            unreachable!("constructed exactly two batch errors");
+        };
         assert!(
-            matches!(&errors[0], CliError::Format { path, diagnostics: retained }
+            matches!(format_error, CliError::Format { path, diagnostics: retained }
             if path == Path::new("bad.mkd") && retained == &diagnostics)
         );
-        assert!(errors[1].source().is_some_and(<dyn Error>::is::<io::Error>));
+        assert!(io_error.source().is_some_and(<dyn Error>::is::<io::Error>));
     }
 
     #[test]

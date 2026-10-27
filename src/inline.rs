@@ -7,49 +7,76 @@ use nom::branch::alt;
 use nom::bytes::complete::{take_while, take_while1};
 use nom::character::complete::{anychar, char};
 use nom::combinator::{opt, recognize};
-use nom::{IResult, Parser};
+use nom::{IResult, Parser as _};
 
-pub(crate) struct Fragment<'source> {
-    pub text: &'source str,
+/// An inline span retaining its original spelling.
+pub struct Fragment<'source> {
+    /// Whether delimiters or whitespace in this span must remain literal.
     pub protected: bool,
+    /// Borrowed source spelling of the span.
+    pub text: &'source str,
 }
 
-fn piece(input: &str, escapes: bool) -> IResult<&str, &str> {
-    if escapes && input.starts_with('\\') {
-        return recognize((char('\\'), opt(anychar))).parse(input);
-    }
-    alt((
-        take_while1(|ch| ch == '`'),
-        take_while1(char::is_whitespace),
-        take_while1(|ch: char| {
-            !ch.is_whitespace() && !matches!(ch, '`' | '|' | '│') && (!escapes || ch != '\\')
-        }),
-        recognize(anychar),
-    ))
-    .parse(input)
+/// A link to a list item, expressed as byte offsets into the source text.
+pub struct ItemReference<'source> {
+    /// Byte offset immediately after the complete link.
+    pub end: usize,
+    /// Unmodified item ID from the link destination.
+    pub id: &'source str,
+    /// Byte offset at the opening bracket.
+    pub start: usize,
+    /// Byte offset at the first character of the target ID.
+    pub target_offset: usize,
 }
 
-pub(crate) fn fragments(text: &str, escapes: bool) -> impl Iterator<Item = Fragment<'_>> {
+/// Split inline text into spans, optionally protecting backslash escapes.
+pub fn fragments(text: &str, escapes: bool) -> impl Iterator<Item = Fragment<'_>> {
     let mut remaining = text;
     let mut code = 0;
     iter::from_fn(move || {
-        let (rest, text) = piece(remaining, escapes).ok()?;
+        let (rest, piece) = {
+            // Recognize one protected or ordinary inline fragment.
+
+            let input: &str = remaining;
+            let result: IResult<&str, &str> = 'piece: {
+                if escapes && input.starts_with('\\') {
+                    break 'piece recognize((char('\\'), opt(anychar))).parse(input);
+                }
+                alt((
+                    take_while1(|ch| ch == '`'),
+                    take_while1(char::is_whitespace),
+                    take_while1(|ch: char| {
+                        !ch.is_whitespace()
+                            && !matches!(ch, '`' | '|' | '│')
+                            && (!escapes || ch != '\\')
+                    }),
+                    recognize(anychar),
+                ))
+                .parse(input)
+            };
+            result
+        }
+        .ok()?;
         remaining = rest;
-        let ticks = text.starts_with('`');
-        let protected = code != 0 || ticks || (escapes && text.starts_with('\\'));
+        let ticks = piece.starts_with('`');
+        let protected = code != 0 || ticks || (escapes && piece.starts_with('\\'));
         if ticks {
             code = match code {
-                0 => text.len(),
-                length if length == text.len() => 0,
+                0 => piece.len(),
+                length if length == piece.len() => 0,
                 length => length,
             };
         }
-        Some(Fragment { text, protected })
+        Some(Fragment {
+            protected,
+            text: piece,
+        })
     })
 }
 
-fn balanced(text: &str, open: char, close: char) -> Option<usize> {
-    let mut depth = 0;
+/// Find the byte offset after a balanced delimiter pair, ignoring escaped scalars.
+pub fn balanced(text: &str, open: char, close: char) -> Option<usize> {
+    let mut depth: usize = 0;
     let mut escaped = false;
     for (offset, ch) in text.char_indices() {
         if escaped {
@@ -61,150 +88,79 @@ fn balanced(text: &str, open: char, close: char) -> Option<usize> {
             continue;
         }
         if ch == open {
-            depth += 1;
+            depth = depth.checked_add(1)?;
         }
         if ch == close {
-            depth -= 1;
+            depth = depth.checked_sub(1)?;
             if depth == 0 {
-                return Some(offset + ch.len_utf8());
+                return offset.checked_add(ch.len_utf8());
             }
         }
     }
     None
 }
 
-fn protected_len(text: &str) -> Option<usize> {
+/// Return the byte length of a protected code span, link, image, or autolink.
+pub fn protected_len(text: &str) -> Option<usize> {
     if text.starts_with('`') {
-        let count = text.bytes().take_while(|b| *b == b'`').count();
+        let count = text.bytes().take_while(|byte| *byte == b'`').count();
         let mut offset = count;
         while offset < text.len() {
-            if text[offset..].starts_with('`') {
-                let run = text[offset..].bytes().take_while(|b| *b == b'`').count();
+            let tail = text.get(offset..)?;
+            if tail.starts_with('`') {
+                let run = tail.bytes().take_while(|byte| *byte == b'`').count();
                 if run == count {
-                    return Some(offset + run);
+                    return offset.checked_add(run);
                 }
-                offset += run;
+                offset = offset.checked_add(run)?;
             } else {
-                offset += text[offset..].chars().next()?.len_utf8();
+                offset = offset.checked_add(tail.chars().next()?.len_utf8())?;
             }
         }
     }
     let image = usize::from(text.starts_with("!["));
-    if text[image..].starts_with('[') {
-        let end = image + balanced(&text[image..], '[', ']')?;
-        if text[end..].starts_with('(') {
-            return Some(end + balanced(&text[end..], '(', ')')?);
+    let label = text.get(image..)?;
+    if label.starts_with('[') {
+        let end = image.checked_add(balanced(label, '[', ']')?)?;
+        let destination = text.get(end..)?;
+        if destination.starts_with('(') {
+            return end.checked_add(balanced(destination, '(', ')')?);
         }
-        if text[end..].starts_with('[') {
-            return Some(end + balanced(&text[end..], '[', ']')?);
+        if destination.starts_with('[') {
+            return end.checked_add(balanced(destination, '[', ']')?);
         }
         return Some(end);
     }
     if text.starts_with('<') {
         let end = text.find('>')?;
-        let body = &text[1..end];
+        let body = text.get(1..end)?;
         if !body.chars().any(char::is_whitespace) && (body.contains(':') || body.contains('@')) {
-            return Some(end + 1);
+            return end.checked_add(1);
         }
     }
     None
 }
 
-pub(crate) fn tokens(text: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let mut begin = 0;
-    let mut offset = 0;
-    while offset < text.len() {
-        if let Some(length) = protected_len(&text[offset..]) {
-            offset += length;
-            continue;
-        }
-        let ch = text[offset..].chars().next().unwrap_or(' ');
-        if ch.is_whitespace() {
-            if begin < offset {
-                tokens.push(&text[begin..offset]);
-            }
-            begin = offset + ch.len_utf8();
-        }
-        offset += ch.len_utf8();
-    }
-    if begin < text.len() {
-        tokens.push(&text[begin..]);
-    }
-    tokens
-}
-
-pub(crate) struct ItemReference<'source> {
-    pub start: usize,
-    pub end: usize,
-    pub target_offset: usize,
-    pub id: &'source str,
-}
-
-pub(crate) fn item_references(text: &str) -> Vec<ItemReference<'_>> {
-    let mut references = Vec::new();
-    let mut offset = 0;
-    while offset < text.len() {
-        let tail = &text[offset..];
-        if let Some(escaped) = tail.strip_prefix('\\') {
-            offset += 1 + escaped.chars().next().map_or(0, char::len_utf8);
-            continue;
-        }
-        if tail.starts_with('[')
-            && let Some(label_end) = balanced(tail, '[', ']')
-            && tail[label_end..].starts_with('(')
-            && let Some(destination_end) = balanced(&tail[label_end..], '(', ')')
-        {
-            let end = label_end + destination_end;
-            let destination = &tail[label_end + 1..end - 1];
-            if let Some(id) = destination.strip_prefix("item:") {
-                references.push(ItemReference {
-                    start: offset,
-                    end: offset + end,
-                    target_offset: offset + label_end + 1 + "item:".len(),
-                    id,
-                });
-            }
-            offset += end;
-            continue;
-        }
-        if let Some(length) = protected_len(tail) {
-            offset += length;
-        } else {
-            offset += tail.chars().next().map_or(1, char::len_utf8);
-        }
-    }
-    references
-}
-
-pub(crate) fn cells(text: &str, delimiter: char) -> Vec<&str> {
+/// Split a table row at unprotected delimiters and trim each cell.
+pub fn cells(text: &str, delimiter: char) -> Vec<&str> {
     let mut cells = Vec::new();
-    let mut begin = 0;
-    let mut offset = 0;
+    // Fragment lengths partition text, so offsets stay within its UTF-8 boundaries.
+    let mut begin: usize = 0;
+    let mut offset: usize = 0;
     for fragment in fragments(text, true) {
         if !fragment.protected && fragment.text.starts_with(delimiter) {
-            cells.push(text[begin..offset].trim());
-            begin = offset + fragment.text.len();
+            cells.push(text.split_at(offset).0.split_at(begin).1.trim());
+            begin = offset.strict_add(fragment.text.len());
         }
-        offset += fragment.text.len();
+        offset = offset.strict_add(fragment.text.len());
     }
-    cells.push(text[begin..].trim());
+    cells.push(text.split_at(begin).1.trim());
     cells
 }
 
-pub(crate) fn escape_delimiters(text: &str) -> String {
-    let mut output = String::new();
-    for fragment in fragments(text, true) {
-        if matches!(fragment.text, "|" | "│") {
-            output.push('\\');
-        }
-        output.push_str(fragment.text);
-    }
-    output
-}
-
 // Table borders also need recognition in the wrapping guard.
-pub(crate) fn ascii_rule(input: &str) -> IResult<&str, &str> {
+/// Recognize an ASCII table border containing at least one dash.
+pub fn ascii_rule(input: &str) -> IResult<&str, &str> {
     use nom::combinator::{all_consuming, verify};
 
     all_consuming(recognize((

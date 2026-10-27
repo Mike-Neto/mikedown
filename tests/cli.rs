@@ -7,13 +7,23 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Output, Stdio};
+
+const EXIT_SUCCESS: i32 = 0;
+const EXIT_FAILURE: i32 = 1;
+const EXIT_USAGE_ERROR: i32 = 2;
 
 struct Workspace(PathBuf);
 
 impl Workspace {
+    fn file(&self, name: &str, text: &str) -> PathBuf {
+        let path = self.0.join(name);
+        fs::write(&path, text).unwrap();
+        path
+    }
+
     #[expect(
         clippy::create_dir,
         reason = "Exclusive creation prevents reusing another test directory"
@@ -27,12 +37,6 @@ impl Workspace {
         ));
         fs::create_dir(&path).unwrap();
         Self(path)
-    }
-
-    fn file(&self, name: &str, text: &str) -> PathBuf {
-        let path = self.0.join(name);
-        fs::write(&path, text).unwrap();
-        path
     }
 }
 
@@ -102,12 +106,12 @@ fn item_reference_errors_prevent_all_batch_writes() {
         .arg(&bad)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(fs::read_to_string(good).unwrap(), good_source);
     assert_eq!(fs::read_to_string(bad).unwrap(), bad_source);
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("bad.mkd"));
-    assert!(stderr.contains("line: 1, column: 13"));
+    assert!(stderr.contains("column: 13, line: 1"));
     assert!(stderr.contains("unknown item reference 'missing'"));
 }
 
@@ -121,7 +125,7 @@ fn check_and_write_have_correct_exit_codes() {
         .arg(&path)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(output.stdout, b"");
     assert!(
         String::from_utf8(output.stderr)
@@ -130,12 +134,12 @@ fn check_and_write_have_correct_exit_codes() {
     );
     assert_eq!(fs::read_to_string(&path).unwrap(), "#    Heading\n");
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
-    let output = command()
+    let write_output = command()
         .args(["fmt", "--write"])
         .arg(&path)
         .output()
         .unwrap();
-    assert!(output.status.success(), "{output:?}");
+    assert!(write_output.status.success(), "{write_output:?}");
     assert_eq!(fs::read_to_string(&path).unwrap(), "# Heading\n");
     assert!(
         command()
@@ -168,7 +172,7 @@ fn whole_batch_validates_before_writes() {
         .args([&good, &bad])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(fs::read_to_string(&good).unwrap(), "#   Good\n");
     assert_eq!(
         fs::read_to_string(&bad).unwrap(),
@@ -177,7 +181,7 @@ fn whole_batch_validates_before_writes() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("line: 1, column: 12, message: \"invalid value")
+            .contains("column: 12, line: 1, message: \"invalid value")
     );
     let missing = workspace.0.join("missing.mkd");
     assert_eq!(
@@ -188,7 +192,7 @@ fn whole_batch_validates_before_writes() {
             .unwrap()
             .status
             .code(),
-        Some(1)
+        Some(EXIT_FAILURE)
     );
     assert_eq!(fs::read_to_string(good).unwrap(), "#   Good\n");
     assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 2);
@@ -201,7 +205,7 @@ fn successful_batch_writes_all_inputs_and_preserves_permissions() {
     let second = workspace.file("second.mkd", "#   Second\n");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::PermissionsExt as _;
         fs::set_permissions(&first, fs::Permissions::from_mode(0o640)).unwrap();
     };
     let output = command()
@@ -214,7 +218,7 @@ fn successful_batch_writes_all_inputs_and_preserves_permissions() {
     assert_eq!(fs::read_to_string(&second).unwrap(), "# Second\n");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(
             fs::metadata(first).unwrap().permissions().mode() & 0o777,
             0o640
@@ -232,7 +236,11 @@ fn invalid_usage_and_invalid_utf8_do_not_write() {
         vec!["fmt", "--unknown"],
         vec!["other"],
     ] {
-        assert_eq!(run(&args, None).status.code(), Some(2), "{args:?}");
+        assert_eq!(
+            run(&args, None).status.code(),
+            Some(EXIT_USAGE_ERROR),
+            "{args:?}"
+        );
     }
     let workspace = Workspace::new();
     let path = workspace.file("bad.mkd", "");
@@ -245,10 +253,10 @@ fn invalid_usage_and_invalid_utf8_do_not_write() {
             .unwrap()
             .status
             .code(),
-        Some(1)
+        Some(EXIT_FAILURE)
     );
     assert_eq!(fs::read(path).unwrap(), [0xff, 0xfe]);
-    let path = workspace.file("-note.mkd", "#    Hello\n");
+    let option_path = workspace.file("-note.mkd", "#    Hello\n");
     let output = command()
         .current_dir(&workspace.0)
         .args(["fmt", "--", "-note.mkd"])
@@ -256,7 +264,7 @@ fn invalid_usage_and_invalid_utf8_do_not_write() {
         .unwrap();
     assert!(output.status.success());
     assert_eq!(output.stdout, b"# Hello\n");
-    assert!(Path::new(&path).exists());
+    assert!(Path::new(&option_path).exists());
 }
 
 #[test]
@@ -268,7 +276,7 @@ fn duplicate_write_inputs_are_rejected_before_changes() {
         .args([&path, &path])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(fs::read_to_string(path).unwrap(), "#   Hello\n");
 }
 
@@ -287,7 +295,7 @@ fn symlink_write_is_rejected_before_other_files_change() {
         .args([&other, &link])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(fs::read_to_string(&original).unwrap(), "#   Hello\n");
     assert_eq!(fs::read_to_string(&other).unwrap(), "#   Other\n");
     assert!(
@@ -310,12 +318,12 @@ fn help_version_and_error_output() {
             .starts_with(b"mikedown 0.1.0")
     );
     let output = run(&["fmt"], Some("@ol\ntext"));
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.starts_with("Error: Batch([Format {"));
     assert!(stderr.contains("path: \"-\""));
-    assert!(stderr.contains("line: 1, column: 1"));
+    assert!(stderr.contains("column: 1, line: 1"));
     assert!(stderr.contains("ol annotation has an incompatible target block"));
 }
 
@@ -329,7 +337,7 @@ fn clap_help_and_version_use_stdout() {
         vec!["fmt", "-h"],
     ] {
         let output = run(&arguments, None);
-        assert_eq!(output.status.code(), Some(0), "{arguments:?}");
+        assert_eq!(output.status.code(), Some(EXIT_SUCCESS), "{arguments:?}");
         assert_eq!(output.stderr, b"");
         let help = String::from_utf8(output.stdout).unwrap();
         assert!(help.contains("Usage:"));
@@ -342,7 +350,7 @@ fn clap_help_and_version_use_stdout() {
     }
     for version in ["--version", "-V"] {
         let output = run(&[version], None);
-        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(output.status.code(), Some(EXIT_SUCCESS));
         assert_eq!(output.stderr, b"");
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
@@ -366,7 +374,11 @@ fn clap_usage_errors_precede_io_and_use_stderr() {
         vec!["other"],
     ] {
         let output = run(&arguments, Some("#  Input\n"));
-        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        assert_eq!(
+            output.status.code(),
+            Some(EXIT_USAGE_ERROR),
+            "{arguments:?}"
+        );
         assert_eq!(output.stdout, b"");
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(error.contains("error:"), "{arguments:?}: {error}");
@@ -385,16 +397,16 @@ fn repeated_mode_flags_and_options_after_paths_are_accepted() {
         .args(["--check", "--check"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(fs::read_to_string(&path).unwrap(), "#   Hello\n");
-    let output = command()
+    let write_output = command()
         .args(["fmt", "--write", "--write"])
         .arg(&path)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(output.stdout, b"");
-    assert_eq!(output.stderr, b"");
+    assert_eq!(write_output.status.code(), Some(EXIT_SUCCESS));
+    assert_eq!(write_output.stdout, b"");
+    assert_eq!(write_output.stderr, b"");
     assert_eq!(fs::read_to_string(&path).unwrap(), "# Hello\n");
 }
 
@@ -407,7 +419,7 @@ fn double_dash_preserves_option_shaped_filenames() {
         .args(["fmt", "--write", "--", "--check"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(EXIT_SUCCESS));
     assert_eq!(output.stdout, b"");
     assert_eq!(output.stderr, b"");
     assert_eq!(fs::read_to_string(path).unwrap(), "# Hello\n");
@@ -425,7 +437,7 @@ fn non_utf8_paths_work_in_stdout_and_write_modes() {
         .join(OsString::from_vec(b"note-\xff.mkd".to_vec()));
     fs::write(&path, "#   Hello\n").unwrap();
     let output = command().arg("fmt").arg(&path).output().unwrap();
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(EXIT_SUCCESS));
     assert_eq!(output.stdout, b"# Hello\n");
     assert_eq!(output.stderr, b"");
     let output = command()
@@ -433,7 +445,7 @@ fn non_utf8_paths_work_in_stdout_and_write_modes() {
         .arg(&path)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(EXIT_SUCCESS));
     assert_eq!(fs::read_to_string(path).unwrap(), "# Hello\n");
 }
 
@@ -441,7 +453,7 @@ fn non_utf8_paths_work_in_stdout_and_write_modes() {
 #[test]
 fn non_utf8_path_arguments_reach_file_io() {
     use std::ffi::OsString;
-    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::ffi::OsStringExt as _;
 
     // macOS filesystems reject invalid UTF-8 filenames, so a missing path checks
     // argument acceptance without requiring the filesystem to store one.
@@ -456,7 +468,7 @@ fn non_utf8_path_arguments_reach_file_io() {
             command.arg(mode);
         }
         let output = command.arg(&path).output().unwrap();
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(EXIT_FAILURE));
         assert_eq!(output.stdout, b"");
         let error = String::from_utf8(output.stderr).unwrap();
         assert!(error.starts_with("Error: Batch([FileIo {"), "{error}");
@@ -477,16 +489,16 @@ fn batch_errors_report_all_failures_without_writing_valid_inputs() {
         .args([&good, &bad, &missing, &other_bad])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr).unwrap();
     let bad_position = stderr.find("bad.mkd").unwrap();
     let missing_position = stderr.find("missing.mkd").unwrap();
     let other_position = stderr.find("other-bad.mkd").unwrap();
-    assert!(stderr.contains("line: 1, column: 12"));
+    assert!(stderr.contains("column: 12, line: 1"));
     assert!(stderr.contains("invalid value 'invalid' for width"));
     assert!(stderr.contains("FileIo {"));
-    assert!(stderr.contains("line: 1, column: 1"));
+    assert!(stderr.contains("column: 1, line: 1"));
     assert!(stderr.contains("unclosed code fence"));
     assert!(bad_position < missing_position && missing_position < other_position);
     assert!(stderr.starts_with("Error: Batch(["));
@@ -502,39 +514,39 @@ fn markdown_extension_supports_stdout_check_and_write() {
     let native = workspace.file("notes.mkd", original);
     let expected = mikedown::format(original).unwrap();
     for path in [&markdown, &native] {
-        let output = command().arg("fmt").arg(path).output().unwrap();
-        assert_eq!(output.status.code(), Some(0));
-        assert_eq!(output.stdout, expected.as_bytes());
-        assert_eq!(output.stderr, b"");
+        let stdout_output = command().arg("fmt").arg(path).output().unwrap();
+        assert_eq!(stdout_output.status.code(), Some(EXIT_SUCCESS));
+        assert_eq!(stdout_output.stdout, expected.as_bytes());
+        assert_eq!(stdout_output.stderr, b"");
         assert_eq!(fs::read_to_string(path).unwrap(), original);
 
-        let output = command()
+        let check_output = command()
             .args(["fmt", "--check"])
             .arg(path)
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(1));
-        assert_eq!(output.stdout, b"");
+        assert_eq!(check_output.status.code(), Some(EXIT_FAILURE));
+        assert_eq!(check_output.stdout, b"");
         assert_eq!(fs::read_to_string(path).unwrap(), original);
 
-        let output = command()
+        let write_output = command()
             .args(["fmt", "--write"])
             .arg(path)
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(0));
-        assert_eq!(output.stdout, b"");
-        assert_eq!(output.stderr, b"");
+        assert_eq!(write_output.status.code(), Some(EXIT_SUCCESS));
+        assert_eq!(write_output.stdout, b"");
+        assert_eq!(write_output.stderr, b"");
         assert_eq!(fs::read_to_string(path).unwrap(), expected);
 
-        let output = command()
+        let recheck_output = command()
             .args(["fmt", "--check"])
             .arg(path)
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(0));
-        assert_eq!(output.stdout, b"");
-        assert_eq!(output.stderr, b"");
+        assert_eq!(recheck_output.status.code(), Some(EXIT_SUCCESS));
+        assert_eq!(recheck_output.stdout, b"");
+        assert_eq!(recheck_output.stderr, b"");
     }
 }
 
@@ -549,12 +561,12 @@ fn unsupported_markdown_document_version_prevents_batch_writes() {
         .args([&good, &future])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(EXIT_FAILURE));
     assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.starts_with("Error: Batch([Format {"));
     assert!(stderr.contains("future.md"));
-    assert!(stderr.contains("line: 1, column: 11"));
+    assert!(stderr.contains("column: 11, line: 1"));
     assert!(stderr.contains("unsupported Mikedown version '999.0.0'; supported version is 0.1.0"));
     assert_eq!(fs::read_to_string(good).unwrap(), "#   Notes\n");
     assert_eq!(fs::read_to_string(future).unwrap(), original);

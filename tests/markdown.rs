@@ -27,8 +27,8 @@ fn checkbox_depths(source: &str) -> Vec<(usize, bool)> {
     let mut checkboxes = Vec::new();
     for event in Parser::new_ext(source, Options::ENABLE_TASKLISTS) {
         match event {
-            Event::Start(Tag::List(_)) => depth += 1,
-            Event::End(TagEnd::List(_)) => depth -= 1,
+            Event::Start(Tag::List(_)) => depth = depth.strict_add(1),
+            Event::End(TagEnd::List(_)) => depth = depth.strict_sub(1),
             Event::TaskListMarker(checked) => checkboxes.push((depth, checked)),
             Event::Start(_)
             | Event::End(_)

@@ -6,7 +6,7 @@
 )]
 
 use mikedown::format;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthStr as _;
 
 fn stable(source: &str) -> String {
     let output = format(source).unwrap_or_else(|errors| panic!("{source:?}: {errors:?}"));
@@ -109,15 +109,19 @@ fn table_unicode_width_alignment_and_escapes_round_trip() {
             .lines()
             .filter(|line| !line.starts_with('@') && !line.is_empty())
             .collect();
-        assert!(lines.iter().all(|line| line.width() == lines[0].width()));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.width() == lines.first().unwrap().width())
+        );
     }
     let output = stable("| h | v |\n| a\\|b | c│d |\n| `x|y` | ``a│`b`` |\n");
     assert!(output.contains("a\\|b"));
     assert!(output.contains("c\\│d"));
     assert!(output.contains("`x\\|y`"));
     assert!(output.contains("``a\\│`b``"));
-    let output = stable("| a | b | c |\n| :--- | ---: | :---: |\n| x | 12 | y |\n");
-    assert!(!output.contains("@table"));
+    let aligned_output = stable("| a | b | c |\n| :--- | ---: | :---: |\n| x | 12 | y |\n");
+    assert!(!aligned_output.contains("@table"));
 }
 
 #[test]
@@ -221,10 +225,10 @@ fn malformed_documents_have_source_locations() {
     ];
     for (source, expected) in cases {
         let errors = format(source).unwrap_err();
-        assert!(errors[0].line > 0);
-        assert!(errors[0].column > 0);
+        assert!(errors.first().unwrap().line > 0);
+        assert!(errors.first().unwrap().column > 0);
         assert!(
-            errors[0].message.contains(expected),
+            errors.first().unwrap().message.contains(expected),
             "{source:?}: {errors:?}"
         );
     }
@@ -288,9 +292,12 @@ fn varied_documents_remain_valid_and_idempotent_after_formatting() {
         "\\@ol",
     ];
     let mut random: u64 = 123_456;
-    for _ in 0..1500 {
+    let iterations: usize = 1500;
+    let words_per_document: usize = 30;
+    let random_shift: u32 = 32;
+    for _ in 0..iterations {
         let mut source = String::from("@document mikedown=0.1.0 width=12\n\n");
-        for _ in 0..30 {
+        for _ in 0..words_per_document {
             random = random
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1);
@@ -298,13 +305,14 @@ fn varied_documents_remain_valid_and_idempotent_after_formatting() {
                 clippy::integer_division_remainder_used,
                 reason = "Generated test data uses modulo to select a word and needs no constant-time arithmetic"
             )]
-            let index = usize::try_from(random >> 32).unwrap() % words.len();
-            source.push_str(words[index]);
+            let index = usize::try_from(random >> random_shift).unwrap() % words.len();
+            source.push_str(words.get(index).unwrap());
             source.push(' ');
         }
         if let Ok(first) = format(&source) {
-            let second = format(&first)
-                .unwrap_or_else(|e| panic!("generated invalid output: {source:?}\n{first}\n{e:?}"));
+            let second = format(&first).unwrap_or_else(|error| {
+                panic!("generated invalid output: {source:?}\n{first}\n{error:?}")
+            });
             assert_eq!(second, first, "source: {source}");
         }
     }
@@ -418,18 +426,24 @@ fn old_annotation_notation_is_prose_and_rules_remain_rules() {
 
 #[test]
 fn directive_options_have_accurate_source_coordinates() {
-    let errors = format("\n  @paragraph width=invalid\ntext\n").unwrap_err();
-    assert_eq!(errors[0].line, 2);
-    assert_eq!(errors[0].column, 14);
-    let errors = format("@table mystery=value\n| a |\n").unwrap_err();
-    assert_eq!(errors[0].line, 1);
-    assert_eq!(errors[0].column, 8);
-    assert_eq!(errors[0].message, "unsupported option 'mystery' for table");
-    let errors = format("@table table\n| a |\n").unwrap_err();
-    assert_eq!(errors[0].column, 8);
-    let errors = format("@paragraph width=2 width=2\ntext\n").unwrap_err();
-    assert_eq!(errors[0].column, 20);
-    assert_eq!(errors[0].message, "duplicate option 'width'");
+    let width_errors = format("\n  @paragraph width=invalid\ntext\n").unwrap_err();
+    assert_eq!(width_errors.first().unwrap().line, 2);
+    assert_eq!(width_errors.first().unwrap().column, 14);
+    let unknown_option_errors = format("@table mystery=value\n| a |\n").unwrap_err();
+    assert_eq!(unknown_option_errors.first().unwrap().line, 1);
+    assert_eq!(unknown_option_errors.first().unwrap().column, 8);
+    assert_eq!(
+        unknown_option_errors.first().unwrap().message,
+        "unsupported option 'mystery' for table"
+    );
+    let missing_value_errors = format("@table table\n| a |\n").unwrap_err();
+    assert_eq!(missing_value_errors.first().unwrap().column, 8);
+    let duplicate_option_errors = format("@paragraph width=2 width=2\ntext\n").unwrap_err();
+    assert_eq!(duplicate_option_errors.first().unwrap().column, 20);
+    assert_eq!(
+        duplicate_option_errors.first().unwrap().message,
+        "duplicate option 'width'"
+    );
     assert_eq!(
         stable("@paragraph\twidth=off\nfirst\nsecond\n"),
         "@paragraph width=off\nfirst\nsecond\n"
@@ -496,8 +510,8 @@ fn unicode_annotation_spacing_keeps_scalar_columns() {
 fn fences_require_matching_characters_lengths_and_clean_closers() {
     let source = "````text\n```\n~~~~\n```` trailing\n@ol\n`````\n";
     assert_eq!(stable(source), source);
-    for source in ["```", "~~~~\n~~~", "````\n```", "```\n~~~", "```\n```text"] {
-        let diagnostic = format(source).unwrap_err().remove(0);
+    for malformed_fence in ["```", "~~~~\n~~~", "````\n```", "```\n~~~", "```\n```text"] {
+        let diagnostic = format(malformed_fence).unwrap_err().remove(0);
         assert_eq!(diagnostic.to_string(), "1:1: unclosed code fence");
     }
 }
@@ -601,11 +615,11 @@ fn document_versions_have_source_located_validation() {
         .remove(0);
     assert_eq!(diagnostic.column, 26);
     assert_eq!(diagnostic.message, "duplicate option 'mikedown'");
-    let diagnostic = format("@paragraph mikedown=0.1.0\ntext")
+    let paragraph_diagnostic = format("@paragraph mikedown=0.1.0\ntext")
         .unwrap_err()
         .remove(0);
     assert_eq!(
-        diagnostic.message,
+        paragraph_diagnostic.message,
         "unsupported option 'mikedown' for paragraph"
     );
 }

@@ -284,7 +284,7 @@ fn checkbox_reference_errors_keep_original_columns() {
         let diagnostic = format(source).unwrap_err().remove(0);
         assert_eq!(
             (diagnostic.line, diagnostic.column),
-            (line + 1, text[..offset].chars().count() + 1)
+            (line + 1, text.split_at(offset).0.chars().count() + 1)
         );
         assert!(diagnostic.message.contains("unknown item reference"));
     }
@@ -334,7 +334,10 @@ fn ids_are_unique_across_items_tables_and_separate_lists() {
         "@ol\n@item id=x\n- One\n\n@ol\n@item id=x\n- Two\n",
     ] {
         assert!(
-            format(source).unwrap_err()[0]
+            format(source)
+                .unwrap_err()
+                .first()
+                .unwrap()
                 .message
                 .contains("duplicate ID 'x'")
         );
@@ -361,17 +364,26 @@ fn reference_errors_point_to_original_unicode_source_coordinates() {
         assert!(diagnostic.message.contains("unknown item reference"));
     }
     assert!(
-        format("[](item:1bad)\n").unwrap_err()[0]
+        format("[](item:1bad)\n")
+            .unwrap_err()
+            .first()
+            .unwrap()
             .message
             .contains("invalid item reference")
     );
     assert!(
-        format("@table id=x\n| h |\n\n[](item:x)\n").unwrap_err()[0]
+        format("@table id=x\n| h |\n\n[](item:x)\n")
+            .unwrap_err()
+            .first()
+            .unwrap()
             .message
             .contains("targets a table")
     );
     assert!(
-        format("> `unmatched\n>\n> [](item:missing)\n").unwrap_err()[0]
+        format("> `unmatched\n>\n> [](item:missing)\n")
+            .unwrap_err()
+            .first()
+            .unwrap()
             .message
             .contains("unknown item reference")
     );
@@ -393,7 +405,7 @@ fn table_diagnostics_use_original_cells_before_delimiter_escaping() {
         let diagnostic = format(source).unwrap_err().remove(0);
         assert_eq!(
             (diagnostic.line, diagnostic.column),
-            (line + 1, text[..offset].chars().count() + 1)
+            (line + 1, text.split_at(offset).0.chars().count() + 1)
         );
     }
 }
